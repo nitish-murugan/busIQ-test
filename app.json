@@ -24,6 +24,16 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Bus Booking to use the camera for QR scanning.",
+          "barcodeScannerEnabled": true
+        }
+      ],
+      "@react-native-community/datetimepicker"
+    ]
   }
 }
