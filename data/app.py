@@ -1,7 +1,9 @@
 from flask import Flask, jsonify
+from flask_cors import CORS
 import time
 
 app = Flask(__name__)
+CORS(app)
 
 longLat = [
   [77.711944, 11.342167],
@@ -24,8 +26,8 @@ def data():
     count+=1
     return jsonify({
         "busNumber": "TN 01 AA 0000",
-        "latitude": longLat[count%9][0],
-        "longitude": longLat[count%9][1],
+        "latitude": longLat[count%9][1],
+        "longitude": longLat[count%9][0],
         "timeStamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
 

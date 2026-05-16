@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 
@@ -43,7 +43,31 @@ function resolveApiBaseUrls() {
   ].filter(Boolean);
 }
 
+function resolveTrackingApiUrls() {
+  const configuredBaseUrl = process.env.EXPO_PUBLIC_TRACKING_API_URL?.trim().replace(/\/$/, '');
+  if (configuredBaseUrl) {
+    return [configuredBaseUrl];
+  }
+
+  const runtimeHostCandidates = [
+    Constants.expoConfig?.hostUri,
+    Constants.manifest?.debuggerHost,
+    Constants.manifest2?.extra?.expoClient?.hostUri,
+    NativeModules.SourceCode?.scriptURL,
+  ];
+
+  const host = runtimeHostCandidates.map(extractHost).find(Boolean);
+  const hostUrl = host && host !== 'localhost' && host !== '127.0.0.1' ? `http://${host}:5000` : null;
+
+  return [
+    hostUrl,
+    Platform.OS === 'android' ? 'http://10.0.2.2:5000' : null,
+    'http://localhost:5000',
+  ].filter(Boolean);
+}
+
 const API_BASE_URLS = resolveApiBaseUrls();
+const TRACKING_API_BASE_URLS = resolveTrackingApiUrls();
 
 const authInitialState = {
   name: '',
@@ -149,6 +173,62 @@ async function requestJson(path, { method = 'GET', body, token } = {}) {
 
   const attempted = triedBaseUrls.length ? ` Tried: ${triedBaseUrls.join(', ')}.` : '';
   throw new Error(`Backend unreachable from Expo Go.${attempted} Start the backend with the app, then use your laptop LAN IP in EXPO_PUBLIC_API_BASE_URL if you are on a physical device.`.trim() || lastNetworkError?.message || 'Network request failed');
+}
+
+async function requestTrackingJson(path) {
+  let lastNetworkError = null;
+  const triedBaseUrls = [];
+
+  for (const baseUrl of TRACKING_API_BASE_URLS) {
+    try {
+      triedBaseUrls.push(baseUrl);
+      const response = await fetch(`${baseUrl}${path}`);
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.message || 'Unable to load live tracking data');
+      }
+
+      return data;
+    } catch (error) {
+      const isNetworkError = String(error?.message || '').includes('Network request failed') || String(error?.message || '').includes('Failed to fetch');
+
+      if (!isNetworkError) {
+        throw error;
+      }
+
+      lastNetworkError = error;
+    }
+  }
+
+  const attempted = triedBaseUrls.length ? ` Tried: ${triedBaseUrls.join(', ')}.` : '';
+  throw new Error(`Tracking service unreachable.${attempted} Start the Python tracker on port 5000 and make sure the app can reach it on your device or emulator.`.trim() || lastNetworkError?.message || 'Network request failed');
+}
+
+function formatCoordinate(value) {
+  return typeof value === 'number' ? value.toFixed(6) : '';
+}
+
+function normalizeBusNumber(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildMapEmbedUrl(latitude, longitude) {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+
+  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    return null;
+  }
+
+  const latDelta = 0.0005;
+  const lngDelta = 0.0005;
+  const left = lng - lngDelta;
+  const right = lng + lngDelta;
+  const top = lat + latDelta;
+  const bottom = lat - latDelta;
+
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${left}%2C${bottom}%2C${right}%2C${top}&layer=mapnik&marker=${lat}%2C${lng}`;
 }
 
 function AppHeader({ session, onLogout }) {
@@ -323,6 +403,146 @@ function BusDetailsCard({ bus, onStartBooking, hideActions = false }) {
   );
 }
 
+function LiveTrackingPanel({ ticket, onClose }) {
+  const [locationData, setLocationData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [history, setHistory] = useState([]);
+
+  const ticketBusNumber = normalizeBusNumber(ticket?.bus?.busNumber || ticket?.busNumber);
+  const liveBusNumber = normalizeBusNumber(locationData?.busNumber);
+  const busMatches = Boolean(ticketBusNumber && liveBusNumber && ticketBusNumber === liveBusNumber);
+  const waitingForBusData = !liveBusNumber;
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadLiveLocation = async () => {
+      try {
+        setError('');
+        const data = await requestTrackingJson('/data');
+
+        if (!isActive) {
+          return;
+        }
+
+        const nextPoint = {
+          latitude: Number(data.latitude),
+          longitude: Number(data.longitude),
+          timeStamp: data.timeStamp,
+          busNumber: data.busNumber,
+        };
+
+        setLocationData(nextPoint);
+        setHistory((current) => [nextPoint, ...current].slice(0, 5));
+      } catch (trackingError) {
+        if (isActive) {
+          setError(trackingError.message);
+        }
+      } finally {
+        if (isActive) {
+          setLoading(false);
+        }
+      }
+    };
+
+    setLoading(true);
+    loadLiveLocation();
+    const intervalId = setInterval(loadLiveLocation, 5000);
+
+    return () => {
+      isActive = false;
+      clearInterval(intervalId);
+    };
+  }, [ticket?._id]);
+
+  const mapUrl = useMemo(() => buildMapEmbedUrl(locationData?.latitude, locationData?.longitude), [locationData]);
+
+  return (
+    <Modal visible transparent={false} animationType="slide" onRequestClose={onClose}>
+      <View style={styles.trackingModalScreen}>
+        <View style={styles.trackingModalHeader}>
+          <View>
+            <Text style={styles.kicker}>Live tracking</Text>
+            <Text style={styles.trackingTitle}>Bus {ticket?.bus?.busNumber || ticket?.busNumber || 'Ticket'}</Text>
+            <Text style={styles.trackingSubtitle}>Updates every 5 seconds from the tracking endpoint.</Text>
+          </View>
+          <View style={styles.trackingHeaderActions}>
+            <Pressable onPress={onClose} style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText1}>Back</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <Card style={styles.trackingCard}>
+          {busMatches ? (
+            <>
+              <View style={styles.trackingMapWrap}>
+                {mapUrl ? (
+                  <View style={styles.trackingIframeWrap}>
+                    {Platform.OS === 'web' ? (
+                      <iframe
+                        title="Live bus location map"
+                        src={mapUrl}
+                        style={styles.trackingIframe}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <View style={styles.trackingMapFallback}>
+                        <Text style={styles.helperText}>Open this screen on the web build to see the embedded map.</Text>
+                      </View>
+                    )}
+                    <View style={styles.trackingPinWrap}>
+                      <View style={styles.trackingPinDot} />
+                      <View style={styles.trackingPinStem} />
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.trackingMapFallback}>
+                    <Text style={styles.helperText}>Waiting for location data...</Text>
+                  </View>
+                )}
+                <View style={styles.trackingMapOverlay}>
+                  <Text style={styles.trackingOverlayLabel}>{locationData?.busNumber || ticket?.bus?.busNumber || 'Live bus'}</Text>
+                  <Text style={styles.trackingOverlayValue}>{locationData?.timeStamp || 'Fetching live position...'}</Text>
+                </View>
+              </View>
+
+              <View style={styles.ticketMetaGrid}>
+                <View style={styles.ticketMetaBox}>
+                  <Text style={styles.infoLabel}>Latitude</Text>
+                  <Text style={styles.ticketMetaValue}>{formatCoordinate(locationData?.latitude)}</Text>
+                </View>
+                <View style={styles.ticketMetaBox}>
+                  <Text style={styles.infoLabel}>Longitude</Text>
+                  <Text style={styles.ticketMetaValue}>{formatCoordinate(locationData?.longitude)}</Text>
+                </View>
+                <View style={styles.ticketMetaBox}>
+                  <Text style={styles.infoLabel}>Ticket</Text>
+                  <Text style={styles.ticketMetaValueSmall}>#{ticket?._id?.slice(-8) || 'n/a'}</Text>
+                </View>
+                <View style={styles.ticketMetaBox}>
+                  <Text style={styles.infoLabel}>Status</Text>
+                  <Text style={styles.ticketMetaValueSmall}>{loading ? 'Loading' : error ? 'Offline' : 'Live'}</Text>
+                </View>
+              </View>
+
+              {error ? <Text style={styles.trackingErrorText}>{error}</Text> : null}
+            </>
+          ) : (
+            <View style={styles.trackingMismatchWrap}>
+              <Text style={styles.trackingMismatchTitle}>{waitingForBusData ? 'Fetching live bus data...' : 'Bus number mismatch'}</Text>
+              <Text style={styles.helperText}>Ticket bus: {ticket?.bus?.busNumber || ticket?.busNumber || 'n/a'}</Text>
+              <Text style={styles.helperText}>Live data bus: {locationData?.busNumber || 'waiting for /data'}</Text>
+              <Text style={styles.helperText}>Only matching bus numbers will show the live GPS view.</Text>
+            </View>
+          )}
+        </Card>
+      </View>
+    </Modal>
+  );
+}
+
 function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState(authInitialState);
@@ -402,6 +622,7 @@ function UserDashboard({ session, onLogout }) {
   const [bookingForm, setBookingForm] = useState(bookingInitialState);
   const [tickets, setTickets] = useState([]);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [trackingTicket, setTrackingTicket] = useState(null);
 
   const loadMyBookings = async () => {
     try {
@@ -519,6 +740,11 @@ function UserDashboard({ session, onLogout }) {
     return `${formatDateTime(selectedTicket.validFrom)} - ${formatDateTime(selectedTicket.validTo)}`;
   }, [selectedTicket]);
 
+  const openLiveTracking = (ticketItem) => {
+    setSelectedTicketId(ticketItem._id);
+    setTrackingTicket(ticketItem);
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
       <AppHeader session={session} onLogout={onLogout} />
@@ -587,15 +813,30 @@ function UserDashboard({ session, onLogout }) {
           <SectionTitle title="Your tickets" description="All booked tickets are listed here. Select one to show QR and OTP." />
           {tickets.length ? (
             <>
-              <View style={styles.stopWrap}>
-                {tickets.map((ticketItem) => (
-                  <PillButton
-                    key={ticketItem._id}
-                    label={`${ticketItem.bus?.busNumber || 'BUS'} • ${ticketItem.travelDate}`}
-                    active={(selectedTicket?._id || '') === ticketItem._id}
-                    onPress={() => setSelectedTicketId(ticketItem._id)}
-                  />
-                ))}
+              <View style={styles.ticketListWrap}>
+                {tickets.map((ticketItem) => {
+                  const isSelected = (selectedTicket?._id || '') === ticketItem._id;
+
+                  return (
+                    <View key={ticketItem._id} style={[styles.ticketListItem, isSelected && styles.ticketListItemActive]}>
+                      <View style={styles.busTopRow}>
+                        <View style={styles.ticketListHeader}>
+                          <Text style={styles.cardTitle}>{ticketItem.bus?.busNumber || 'BUS'}</Text>
+                          <Text style={styles.cardSubtitle}>{ticketItem.travelDate} • {ticketItem.startStop} to {ticketItem.endStop}</Text>
+                        </View>
+                        <Text style={styles.seatsBadge}>{ticketItem.status}</Text>
+                      </View>
+                      <View style={styles.rowButtons}>
+                        <Pressable style={styles.secondaryAction} onPress={() => setSelectedTicketId(ticketItem._id)}>
+                          <Text style={styles.secondaryActionText}>{isSelected ? 'Selected' : 'View ticket'}</Text>
+                        </Pressable>
+                        <Pressable style={styles.liveTrackingButton} onPress={() => openLiveTracking(ticketItem)}>
+                          <Text style={styles.liveTrackingButtonText}>Live tracking</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
               {selectedTicket ? (
                 <>
@@ -628,6 +869,8 @@ function UserDashboard({ session, onLogout }) {
           onMatch={handleBusScan}
         />
       ) : null}
+
+      {trackingTicket ? <LiveTrackingPanel ticket={trackingTicket} onClose={() => setTrackingTicket(null)} /> : null}
     </ScrollView>
   );
 }
@@ -1232,8 +1475,12 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: 'center',
   },
-  secondaryButtonText: {
+  secondaryButtonText1: {
     color: '#0F172A',
+    fontWeight: '700',
+  },
+  secondaryButtonText1: {
+    color: '#ffffff',
     fontWeight: '700',
   },
   secondaryAction: {
@@ -1372,5 +1619,171 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     borderRadius: 20,
     backgroundColor: '#FFFFFF',
+  },
+  ticketListWrap: {
+    gap: 12,
+    marginBottom: 12,
+  },
+  ticketListItem: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 20,
+    padding: 14,
+    backgroundColor: '#F8FAFC',
+    gap: 12,
+  },
+  ticketListItemActive: {
+    borderColor: '#7DD3FC',
+    backgroundColor: '#ECFEFF',
+  },
+  ticketListHeader: {
+    flex: 1,
+    gap: 4,
+  },
+  liveTrackingButton: {
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+  },
+  liveTrackingButtonText: {
+    color: '#F8FAFC',
+    fontWeight: '800',
+  },
+  trackingModalScreen: {
+    flex: 1,
+    backgroundColor: '#07111F',
+    padding: 16,
+    gap: 16,
+  },
+  trackingModalHeader: {
+    backgroundColor: '#081427',
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.16)',
+    gap: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  trackingHeaderActions: {
+    alignItems: 'flex-end',
+  },
+  trackingTitle: {
+    color: '#F8FAFC',
+    fontSize: 26,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  trackingSubtitle: {
+    color: '#CBD5E1',
+    marginTop: 6,
+    lineHeight: 20,
+  },
+  trackingCard: {
+    gap: 14,
+  },
+  trackingMapWrap: {
+    position: 'relative',
+    borderRadius: 22,
+    overflow: 'hidden',
+    minHeight: 280,
+    backgroundColor: '#0F172A',
+  },
+  trackingIframeWrap: {
+    width: '100%',
+    height: 280,
+    position: 'relative',
+  },
+  trackingIframe: {
+    width: '100%',
+    height: 280,
+    border: 0,
+    display: 'block',
+    backgroundColor: '#E5E7EB',
+  },
+  trackingPinWrap: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: [{ translateX: -14 }, { translateY: -28 }],
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  trackingPinDot: {
+    width: 18,
+    height: 18,
+    borderRadius: 18,
+    backgroundColor: '#EF4444',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  trackingPinStem: {
+    width: 3,
+    height: 18,
+    backgroundColor: '#EF4444',
+    marginTop: -1,
+  },
+  trackingMapFallback: {
+    height: 280,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  trackingMapOverlay: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 14,
+    backgroundColor: 'rgba(8, 20, 39, 0.82)',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 4,
+  },
+  trackingOverlayLabel: {
+    color: '#7DD3FC',
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    fontWeight: '800',
+  },
+  trackingOverlayValue: {
+    color: '#F8FAFC',
+    fontWeight: '700',
+  },
+  trackingErrorText: {
+    color: '#B91C1C',
+    fontWeight: '700',
+  },
+  trackingHistoryWrap: {
+    gap: 10,
+  },
+  trackingHistoryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  trackingHistoryText: {
+    color: '#0F172A',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  trackingMismatchWrap: {
+    gap: 8,
+    paddingVertical: 12,
+  },
+  trackingMismatchTitle: {
+    color: '#0F172A',
+    fontSize: 18,
+    fontWeight: '800',
   },
 });
