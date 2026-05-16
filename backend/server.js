@@ -416,9 +416,16 @@ app.post('/api/bookings', authRequired, async (req, res) => {
 
     const qrDataUrl = await QRCode.toDataURL(qrToken);
 
+    const bookingObj = populatedBooking.toObject();
+    const now = new Date();
+    // Only expose OTP during the valid window
+    if (!bookingObj.validFrom || !bookingObj.validTo || now < bookingObj.validFrom || now > bookingObj.validTo) {
+      delete bookingObj.otp;
+    }
+
     return res.status(201).json({
       booking: {
-        ...populatedBooking.toObject(),
+        ...bookingObj,
         qrDataUrl,
       },
     });
@@ -433,11 +440,20 @@ app.get('/api/bookings/me', authRequired, async (req, res) => {
       .populate('bus')
       .sort({ createdAt: -1 });
 
+    const now = new Date();
     const bookingsWithQr = await Promise.all(
-      bookings.map(async (booking) => ({
-        ...booking.toObject(),
-        qrDataUrl: await QRCode.toDataURL(booking.qrToken),
-      }))
+      bookings.map(async (booking) => {
+        const obj = booking.toObject();
+        // Only expose OTP during the valid window
+        if (!obj.validFrom || !obj.validTo || now < obj.validFrom || now > obj.validTo) {
+          delete obj.otp;
+        }
+
+        return {
+          ...obj,
+          qrDataUrl: await QRCode.toDataURL(booking.qrToken),
+        };
+      })
     );
 
     return res.json({ bookings: bookingsWithQr });
@@ -448,11 +464,12 @@ app.get('/api/bookings/me', authRequired, async (req, res) => {
 
 app.post('/api/bookings/verify', authRequired, adminOnly, async (req, res) => {
   try {
-    const { bookingId: bodyId, qrToken: bodyToken } = req.body || {};
-    const { bookingId: queryId, qrToken: queryToken } = req.query || {};
+    const { bookingId: bodyId, qrToken: bodyToken, otp: bodyOtp } = req.body || {};
+    const { bookingId: queryId, qrToken: queryToken, otp: queryOtp } = req.query || {};
 
     const bookingId = bodyId || queryId;
     const qrToken = bodyToken || queryToken;
+    const otp = bodyOtp || queryOtp;
 
     console.log('Verification request received:', {
       body: req.body,
@@ -460,20 +477,43 @@ app.post('/api/bookings/verify', authRequired, adminOnly, async (req, res) => {
       resolved: { bookingId, qrToken }
     });
 
-    if (!bookingId && !qrToken) {
+    if (!bookingId && !qrToken && !otp) {
       return res.status(400).json({ 
-        message: 'Booking ID or QR token is required for verification.',
+        message: 'Booking ID, QR token, or OTP is required for verification.',
         debug: { receivedBody: req.body, receivedQuery: req.query }
       });
     }
 
-    const normalizedQrToken = qrToken && !qrToken.startsWith('ticket:') ? `ticket:${qrToken}` : qrToken;
-    const booking = bookingId
-      ? await Booking.findById(bookingId).populate('bus').populate('user', 'name email role')
-      : await Booking.findOne({ qrToken: normalizedQrToken }).populate('bus').populate('user', 'name email role');
+    let booking = null;
+
+    if (otp) {
+      // Prefer direct lookup by ID if provided
+      if (bookingId) {
+        booking = await Booking.findById(bookingId).populate('bus').populate('user', 'name email role');
+        if (!booking || String(booking.otp) !== String(otp)) {
+          return res.status(404).json({ message: 'Booking with provided OTP not found' });
+        }
+      } else {
+        const now = new Date();
+        booking = await Booking.findOne({ otp: String(otp), validFrom: { $lte: now }, validTo: { $gte: now } }).populate('bus').populate('user', 'name email role');
+        if (!booking) {
+          return res.status(404).json({ message: 'Active booking with provided OTP not found' });
+        }
+      }
+    } else {
+      const normalizedQrToken = qrToken && !qrToken.startsWith('ticket:') ? `ticket:${qrToken}` : qrToken;
+      booking = bookingId
+        ? await Booking.findById(bookingId).populate('bus').populate('user', 'name email role')
+        : await Booking.findOne({ qrToken: normalizedQrToken }).populate('bus').populate('user', 'name email role');
+    }
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
+    }
+
+    if (booking.status === 'verified') {
+      const qrDataUrl = await QRCode.toDataURL(booking.qrToken);
+      return res.status(400).json({ message: 'Ticket already verified', booking: { ...booking.toObject(), qrDataUrl } });
     }
 
     const now = new Date();

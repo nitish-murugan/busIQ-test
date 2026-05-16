@@ -641,6 +641,7 @@ function AdminDashboard({ session, onLogout }) {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerPurpose, setScannerPurpose] = useState('ticket');
   const [verifiedTicket, setVerifiedTicket] = useState(null);
+  const [otpVerify, setOtpVerify] = useState('');
 
   const refreshBuses = async () => {
     try {
@@ -810,16 +811,39 @@ function AdminDashboard({ session, onLogout }) {
       {activeTab === 'verify' ? (
         <Card>
           <SectionTitle title="Verify ticket" description="Scan a passenger QR and confirm that the booking is still within the selected route window." />
-          {verifiedTicket ? (
+          <View style={{ gap: 12 }}>
+            <Field label="OTP" value={otpVerify} onChangeText={(v) => setOtpVerify(v)} placeholder="Enter 6-digit OTP" keyboardType="number-pad" />
+            <PrimaryButton label="Verify by OTP" onPress={async () => {
+              try {
+                setLoading(true);
+                const data = await requestJson('/bookings/verify', {
+                  method: 'POST',
+                  token: session.token,
+                  body: { otp: otpVerify },
+                });
+
+                setVerifiedTicket(data.booking);
+                setScannerOpen(false);
+                setActiveTab('verify');
+                Alert.alert('Verified', 'Ticket verified successfully');
+              } catch (error) {
+                Alert.alert('Verification failed', error.message);
+              } finally {
+                setLoading(false);
+              }
+            }} />
+
+            {verifiedTicket ? (
             <View style={styles.ticketMetaGrid}>
               <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Ticket</Text><Text style={styles.ticketMetaValue}>#{verifiedTicket._id.slice(-8)}</Text></View>
               <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.status}</Text></View>
               <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.otp}</Text></View>
               <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Route</Text><Text style={styles.ticketMetaValueSmall}>{verifiedTicket.startStop} → {verifiedTicket.endStop}</Text></View>
             </View>
-          ) : (
+            ) : (
             <Text style={styles.helperText}>Use the scanner to verify an active ticket.</Text>
           )}
+          </View>
           <PrimaryButton label="Open ticket scanner" onPress={() => { setScannerPurpose('ticket'); setScannerOpen(true); }} />
         </Card>
       ) : null}
