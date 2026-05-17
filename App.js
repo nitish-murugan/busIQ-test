@@ -3,6 +3,7 @@ import { Alert, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pre
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 import SvgQRCode from 'react-native-qrcode-svg';
+import * as Location from 'expo-location';
 
 function extractHost(value) {
   if (!value || typeof value !== 'string') {
@@ -88,7 +89,10 @@ const busInitialState = {
   busType: 'Local',
   from: '',
   to: '',
-  stops: ['', ''],
+  stops: [
+    { name: '', lat: 0, lng: 0 },
+    { name: '', lat: 0, lng: 0 },
+  ],
 };
 
 const bookingInitialState = {
@@ -482,11 +486,14 @@ function BusDetailsCard({ bus, onStartBooking, hideActions = false }) {
       </View>
       <Text style={styles.sectionMiniLabel}>Stops</Text>
       <View style={styles.stopWrap}>
-        {(bus.stops || []).map((stop) => (
-          <View key={stop} style={styles.stopChip}>
-            <Text style={styles.stopChipText}>{stop}</Text>
-          </View>
-        ))}
+        {(bus.stops || []).map((stop, idx) => {
+          const stopName = getStopName(stop);
+          return (
+            <View key={`stop-${idx}-${stopName}`} style={styles.stopChip}>
+              <Text style={styles.stopChipText}>{stopName}</Text>
+            </View>
+          );
+        })}
       </View>
       {bus.qrDataUrl ? <Image source={{ uri: bus.qrDataUrl }} style={styles.busQrImage} /> : null}
       {!hideActions && onStartBooking ? (
@@ -614,26 +621,32 @@ function OfflineBookingFlow({ onClose, compact = false }) {
 
             <Text style={styles.sectionMiniLabel}>Start stop</Text>
             <View style={styles.stopWrap}>
-              {(offlineBus.stops || []).map((stop) => (
-                <PillButton
-                  key={`offline-start-${stop}`}
-                  label={stop}
-                  active={bookingForm.startStop === stop}
-                  onPress={() => setBookingForm((current) => ({ ...current, startStop: stop }))}
-                />
-              ))}
+              {(offlineBus.stops || []).map((stop, idx) => {
+                const stopName = getStopName(stop);
+                return (
+                  <PillButton
+                    key={`offline-start-${idx}-${stopName}`}
+                    label={stopName}
+                    active={bookingForm.startStop === stopName}
+                    onPress={() => setBookingForm((current) => ({ ...current, startStop: stopName }))}
+                  />
+                );
+              })}
             </View>
 
             <Text style={styles.sectionMiniLabel}>End stop</Text>
             <View style={styles.stopWrap}>
-              {(offlineBus.stops || []).map((stop) => (
-                <PillButton
-                  key={`offline-end-${stop}`}
-                  label={stop}
-                  active={bookingForm.endStop === stop}
-                  onPress={() => setBookingForm((current) => ({ ...current, endStop: stop }))}
-                />
-              ))}
+              {(offlineBus.stops || []).map((stop, idx) => {
+                const stopName = getStopName(stop);
+                return (
+                  <PillButton
+                    key={`offline-end-${idx}-${stopName}`}
+                    label={stopName}
+                    active={bookingForm.endStop === stopName}
+                    onPress={() => setBookingForm((current) => ({ ...current, endStop: stopName }))}
+                  />
+                );
+              })}
             </View>
 
             <PrimaryButton label="Generate offline ticket" onPress={createOfflineBooking} />
@@ -1231,16 +1244,22 @@ function UserDashboard({ session, onLogout }) {
 
           <Text style={styles.sectionMiniLabel}>Start stop</Text>
           <View style={styles.stopWrap}>
-            {(selectedBus.stops || []).map((stop) => (
-              <PillButton key={`start-${stop}`} label={stop} active={bookingForm.startStop === stop} onPress={() => setBookingForm((current) => ({ ...current, startStop: stop }))} />
-            ))}
+            {(selectedBus.stops || []).map((stop, idx) => {
+              const stopName = getStopName(stop);
+              return (
+                <PillButton key={`start-${idx}-${stopName}`} label={stopName} active={bookingForm.startStop === stopName} onPress={() => setBookingForm((current) => ({ ...current, startStop: stopName }))} />
+              );
+            })}
           </View>
 
           <Text style={styles.sectionMiniLabel}>End stop</Text>
           <View style={styles.stopWrap}>
-            {(selectedBus.stops || []).map((stop) => (
-              <PillButton key={`end-${stop}`} label={stop} active={bookingForm.endStop === stop} onPress={() => setBookingForm((current) => ({ ...current, endStop: stop }))} />
-            ))}
+            {(selectedBus.stops || []).map((stop, idx) => {
+              const stopName = getStopName(stop);
+              return (
+                <PillButton key={`end-${idx}-${stopName}`} label={stopName} active={bookingForm.endStop === stopName} onPress={() => setBookingForm((current) => ({ ...current, endStop: stopName }))} />
+              );
+            })}
           </View>
 
           <PrimaryButton label={`Just Pay ${currencyText(Number(bookingForm.seats) * 249)}`} onPress={createBooking} loading={loading} />
@@ -1323,6 +1342,38 @@ function UserDashboard({ session, onLogout }) {
   );
 }
 
+async function getStopLocation() {
+  try {
+    let { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission denied', 'Location permission is required to capture stop coordinates');
+      return null;
+    }
+
+    const location = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+    });
+
+    return {
+      lat: location.coords.latitude,
+      lng: location.coords.longitude,
+    };
+  } catch (error) {
+    Alert.alert('Location error', error.message);
+    return null;
+  }
+}
+
+function getStopName(stop) {
+  if (typeof stop === 'string') {
+    return stop;
+  }
+  if (typeof stop === 'object' && stop && stop.name) {
+    return stop.name;
+  }
+  return '';
+}
+
 function AdminDashboard({ session, onLogout }) {
   const [activeTab, setActiveTab] = useState('add');
   const [form, setForm] = useState(busInitialState);
@@ -1348,13 +1399,19 @@ function AdminDashboard({ session, onLogout }) {
   }, []);
 
   const addStop = () => {
-    setForm((current) => ({ ...current, stops: [...current.stops, ''] }));
+    setForm((current) => ({ ...current, stops: [...current.stops, { name: '', lat: 0, lng: 0 }] }));
   };
 
-  const updateStop = (index, value) => {
+  const updateStop = (index, updates) => {
     setForm((current) => {
       const nextStops = [...current.stops];
-      nextStops[index] = value;
+      if (typeof updates === 'string') {
+        // Backward compatibility: if string is passed, update name
+        nextStops[index] = { ...nextStops[index], name: updates };
+      } else if (typeof updates === 'object') {
+        // New format: merge updates
+        nextStops[index] = { ...nextStops[index], ...updates };
+      }
       return { ...current, stops: nextStops };
     });
   };
@@ -1362,7 +1419,14 @@ function AdminDashboard({ session, onLogout }) {
   const saveBus = async () => {
     try {
       setLoading(true);
-      const stops = form.stops.map((stop) => stop.trim()).filter(Boolean);
+      // Validate and filter stops: keep only stops with names, default coordinates to 0, 0 if not captured
+      const stops = form.stops
+        .filter((stop) => stop && stop.name && stop.name.trim())
+        .map((stop) => ({
+          name: stop.name.trim(),
+          lat: typeof stop.lat === 'number' ? stop.lat : 0,
+          lng: typeof stop.lng === 'number' ? stop.lng : 0,
+        }));
 
       const data = await requestJson('/buses', {
         method: 'POST',
@@ -1503,7 +1567,35 @@ function AdminDashboard({ session, onLogout }) {
           </View>
           <Text style={styles.sectionMiniLabel}>Stops</Text>
           {form.stops.map((stop, index) => (
-            <Field key={`stop-${index}`} label={`Stop ${index + 1}`} value={stop} onChangeText={(value) => updateStop(index, value)} placeholder={`Stop ${index + 1}`} />
+            <View key={`stop-${index}`} style={[styles.stopContainer, { marginBottom: 16 }]}>
+              <Field 
+                label={`Stop ${index + 1} name`} 
+                value={stop.name || ''} 
+                onChangeText={(value) => updateStop(index, { name: value })} 
+                placeholder={`Stop ${index + 1}`} 
+              />
+              <View style={styles.stopLocationRow}>
+                <Pressable 
+                  style={styles.getLocationButton}
+                  onPress={async () => {
+                    const coords = await getStopLocation();
+                    if (coords) {
+                      updateStop(index, { lat: coords.lat, lng: coords.lng });
+                      Alert.alert('Location captured', `Lat: ${coords.lat.toFixed(6)}, Lng: ${coords.lng.toFixed(6)}`);
+                    }
+                  }}
+                >
+                  <Text style={styles.getLocationButtonText}>Get location</Text>
+                </Pressable>
+                <View style={[styles.coordinateDisplay, stop.lat !== 0 || stop.lng !== 0 ? styles.coordinateDisplaySuccess : null]}>
+                  <Text style={[styles.coordinateText, stop.lat !== 0 || stop.lng !== 0 ? styles.coordinateTextSuccess : null]}>
+                    {stop.lat !== 0 || stop.lng !== 0 
+                      ? `${stop.lat.toFixed(6)}, ${stop.lng.toFixed(6)}` 
+                      : '0, 0'}
+                  </Text>
+                </View>
+              </View>
+            </View>
           ))}
           <View style={styles.rowButtons}>
             <Pressable style={styles.secondaryAction} onPress={addStop}>
@@ -2379,5 +2471,49 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     fontSize: 18,
     fontWeight: '800',
+  },
+  stopContainer: {
+    gap: 8,
+  },
+  stopLocationRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  getLocationButton: {
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flex: 1,
+  },
+  getLocationButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  coordinateDisplay: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  coordinateDisplaySuccess: {
+    backgroundColor: '#DCFCE7',
+    borderColor: '#22C55E',
+  },
+  coordinateText: {
+    color: '#64748B',
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  coordinateTextSuccess: {
+    color: '#166534',
+    fontWeight: '700',
   },
 });

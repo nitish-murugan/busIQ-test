@@ -56,7 +56,13 @@ const busSchema = new mongoose.Schema(
     busType: { type: String, enum: ['Local', 'TNSTC', 'Others'], default: 'Local' },
     from: { type: String, required: true, trim: true },
     to: { type: String, required: true, trim: true },
-    stops: [{ type: String, trim: true }],
+    stops: [
+      {
+        name: { type: String, trim: true },
+        lat: { type: Number, default: 0 },
+        lng: { type: Number, default: 0 },
+      },
+    ],
     timings: [
       {
         label: { type: String, required: true },
@@ -336,7 +342,26 @@ app.get('/api/buses/:id', authRequired, async (req, res) => {
 app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
   try {
   const { busNumber, seats, startTime, endTime, startPeriod, endPeriod, daily, from, to, stops, busType } = req.body || {};
-    const cleanStops = Array.isArray(stops) ? stops.map((stop) => String(stop).trim()).filter(Boolean) : [];
+    
+    // Process stops: handle both old string format and new object format with coordinates
+    const cleanStops = Array.isArray(stops) ? stops.map((stop) => {
+      if (typeof stop === 'string') {
+        // Backward compatibility: convert string to object format with default coordinates
+        return {
+          name: String(stop).trim(),
+          lat: 0,
+          lng: 0,
+        };
+      } else if (typeof stop === 'object' && stop !== null) {
+        // New format with coordinates
+        return {
+          name: String(stop.name || '').trim(),
+          lat: typeof stop.lat === 'number' ? stop.lat : 0,
+          lng: typeof stop.lng === 'number' ? stop.lng : 0,
+        };
+      }
+      return null;
+    }).filter((stop) => stop && stop.name) : [];
 
     if (!busNumber || !seats || !startTime || !endTime || !from || !to) {
       return res.status(400).json({ message: 'Bus number, seats, timings, from, and to are required' });
