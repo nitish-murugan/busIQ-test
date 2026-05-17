@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View, Vibration } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
+import SvgQRCode from 'react-native-qrcode-svg';
 
 function extractHost(value) {
   if (!value || typeof value !== 'string') {
@@ -136,6 +137,84 @@ function parseQrData(rawValue) {
   return null;
 }
 
+function createOfflineTicketId() {
+  return `offline-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+}
+
+function createOfflineOtp() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function parseDateWithTime(travelDate, timeValue) {
+  const base = String(timeValue || '').trim();
+  const match = base.match(/^(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?$/);
+
+  if (!match) {
+    const fallback = new Date(`${travelDate} ${base}`);
+    if (!Number.isNaN(fallback.getTime())) {
+      return fallback;
+    }
+
+    return null;
+  }
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const period = match[3] ? match[3].toUpperCase() : null;
+
+  if (period === 'AM' && hours === 12) {
+    hours = 0;
+  }
+
+  if (period === 'PM' && hours !== 12) {
+    hours += 12;
+  }
+
+  const date = new Date(travelDate);
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+}
+
+function normalizeBusFromQr(parsedBus, parsedId) {
+  if (!parsedBus || typeof parsedBus !== 'object') {
+    return null;
+  }
+
+  return {
+    ...parsedBus,
+    _id: parsedBus._id || parsedId,
+    stops: Array.isArray(parsedBus.stops) ? parsedBus.stops : [],
+    timings: Array.isArray(parsedBus.timings) ? parsedBus.timings : [],
+  };
+}
+
+function buildOfflineTicketPayload({ bus, bookingForm }) {
+  const [startTimeRaw, endTimeRaw] = String(bookingForm.timingLabel || '').split(' - ');
+  const validFromDate = parseDateWithTime(bookingForm.travelDate, startTimeRaw || bus.startTime);
+  const validToDate = parseDateWithTime(bookingForm.travelDate, endTimeRaw || bus.endTime);
+
+  if (!validFromDate || !validToDate || Number.isNaN(validFromDate.getTime()) || Number.isNaN(validToDate.getTime())) {
+    throw new Error('Unable to build ticket validity from selected timing');
+  }
+
+  return {
+    type: 'offline-ticket',
+    id: createOfflineTicketId(),
+    offlineMode: true,
+    issuedAt: new Date().toISOString(),
+    travelDate: bookingForm.travelDate,
+    busId: bus._id,
+    busNumber: bus.busNumber,
+    timingLabel: bookingForm.timingLabel,
+    startStop: bookingForm.startStop,
+    endStop: bookingForm.endStop,
+    seats: Number(bookingForm.seats),
+    otp: createOfflineOtp(),
+    validFrom: validFromDate.toISOString(),
+    validTo: validToDate.toISOString(),
+  };
+}
+
 async function requestJson(path, { method = 'GET', body, token } = {}) {
   let lastNetworkError = null;
   const triedBaseUrls = [];
@@ -235,7 +314,7 @@ function buildMapEmbedUrl(latitude, longitude) {
 function AppHeader({ session, onLogout }) {
   return (
     <View style={styles.headerCard}>
-      <View>
+      <View style={styles.headerLeft}>
         <Text style={styles.kicker}>Bus Booking Platform</Text>
         <Text style={styles.title}>RouteFlow</Text>
         <Text style={styles.subtitle}>Admin bus management, QR ticketing, and user booking in one clean workspace.</Text>
@@ -332,50 +411,54 @@ function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
     }
   };
 
-  if (!permission) {
-    return <View style={styles.scannerPermissionWrap} />;
-  }
-
-  if (!permission.granted) {
-    return (
-      <Card style={styles.scannerCard}>
-        <Text style={styles.cardTitle}>{label}</Text>
-        <Text style={styles.cardSubtitle}>{description}</Text>
-        <PrimaryButton label="Grant Camera Permission" onPress={requestPermission} />
-        <Pressable onPress={onClose} style={styles.secondaryButton}>
-          <Text style={styles.secondaryButtonText}>Close scanner</Text>
-        </Pressable>
-      </Card>
-    );
-  }
-
   return (
-    <Card style={styles.scannerCard}>
-      <View style={styles.scannerHeader}>
-        <View>
-          <Text style={styles.cardTitle}>{label}</Text>
-          <Text style={styles.cardSubtitle}>{description}</Text>
+    <Modal visible animationType="fade" transparent onRequestClose={onClose}>
+      <View style={styles.scannerModalBackdrop}>
+        <View style={styles.scannerModalSheet}>
+          <View style={styles.scannerModalHeader}>
+            <View style={styles.scannerModalHeaderText}>
+              <Text style={styles.kicker}>Scan mode</Text>
+              <Text style={styles.scannerModalTitle}>{label}</Text>
+              <Text style={styles.scannerModalDescription}>{description}</Text>
+            </View>
+            <Pressable onPress={onClose} style={styles.scannerCloseButton}>
+              <Text style={styles.scannerCloseButtonText}>Close</Text>
+            </Pressable>
+          </View>
+
+          {!permission ? (
+            <View style={styles.scannerPermissionContent}>
+              <Text style={styles.cardTitle}>Preparing camera</Text>
+              <Text style={styles.cardSubtitle}>Please wait while the scanner initializes.</Text>
+            </View>
+          ) : !permission.granted ? (
+            <View style={styles.scannerPermissionContent}>
+              <Text style={styles.cardTitle}>Camera permission required</Text>
+              <Text style={styles.cardSubtitle}>Grant camera access to scan QR codes.</Text>
+              <PrimaryButton label="Grant Camera Permission" onPress={requestPermission} />
+            </View>
+          ) : (
+            <>
+              <View style={styles.cameraFrame}>
+                <CameraView
+                  style={styles.camera}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                  onBarcodeScanned={handleBarcodeScanned}
+                />
+                <View style={styles.cameraOverlay}>
+                  <View style={styles.scanCorner} />
+                  <View style={[styles.scanCorner, styles.scanCornerTopRight]} />
+                  <View style={[styles.scanCorner, styles.scanCornerBottomLeft]} />
+                  <View style={[styles.scanCorner, styles.scanCornerBottomRight]} />
+                </View>
+              </View>
+              <Text style={styles.helperText}>Point the camera at a QR code that was generated in this app.</Text>
+            </>
+          )}
         </View>
-        <Pressable onPress={onClose} style={styles.secondaryButton}>
-          <Text style={styles.secondaryButtonText}>Close</Text>
-        </Pressable>
       </View>
-      <View style={styles.cameraFrame}>
-        <CameraView
-          style={styles.camera}
-          facing="back"
-          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-          onBarcodeScanned={handleBarcodeScanned}
-        />
-        <View style={styles.cameraOverlay}>
-          <View style={styles.scanCorner} />
-          <View style={[styles.scanCorner, styles.scanCornerTopRight]} />
-          <View style={[styles.scanCorner, styles.scanCornerBottomLeft]} />
-          <View style={[styles.scanCorner, styles.scanCornerBottomRight]} />
-        </View>
-      </View>
-      <Text style={styles.helperText}>Point the camera at a QR code that was generated in this app.</Text>
-    </Card>
+    </Modal>
   );
 }
 
@@ -410,6 +493,183 @@ function BusDetailsCard({ bus, onStartBooking, hideActions = false }) {
         <PrimaryButton label="Book this bus" onPress={onStartBooking} style={styles.busActionButton} />
       ) : null}
     </Card>
+  );
+}
+
+function OfflineBookingFlow({ onClose, compact = false }) {
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [offlineBus, setOfflineBus] = useState(null);
+  const [bookingForm, setBookingForm] = useState(bookingInitialState);
+  const [generatedTicket, setGeneratedTicket] = useState(null);
+
+  const handleOfflineBusScan = async (parsed) => {
+    if (parsed?.type !== 'bus') {
+      Alert.alert('Invalid QR', 'Please scan a bus QR code.');
+      return;
+    }
+
+    const busFromQr = normalizeBusFromQr(parsed.bus, parsed.id);
+    if (!busFromQr) {
+      Alert.alert('Offline data missing', 'This bus QR does not include embedded route data. Re-generate this bus QR from the latest app version.');
+      return;
+    }
+
+    setOfflineBus(busFromQr);
+    setGeneratedTicket(null);
+    setScannerOpen(false);
+    setBookingForm((current) => ({
+      ...current,
+      timingLabel: busFromQr.timings?.[0]?.label || humanTimeRange(busFromQr.startTime, busFromQr.endTime),
+      startStop: busFromQr.stops?.[0] || '',
+      endStop: busFromQr.stops?.[busFromQr.stops.length - 1] || '',
+      seats: '1',
+    }));
+  };
+
+  const createOfflineBooking = () => {
+    if (!offlineBus) {
+      Alert.alert('Scan bus first', 'Scan a bus QR to load route details before booking offline.');
+      return;
+    }
+
+    const travelDate = String(bookingForm.travelDate || '').trim();
+    const timingLabel = String(bookingForm.timingLabel || '').trim();
+    const startStop = String(bookingForm.startStop || '').trim();
+    const endStop = String(bookingForm.endStop || '').trim();
+    const seatsRequested = Number(bookingForm.seats);
+    if (!travelDate || !timingLabel || !startStop || !endStop || !Number.isInteger(seatsRequested) || seatsRequested < 1) {
+      Alert.alert('Missing details', 'Please fill all booking details before booking.');
+      return;
+    }
+
+    if (!Number.isInteger(seatsRequested) || seatsRequested < 1 || seatsRequested > Number(offlineBus.seats || 0)) {
+      Alert.alert('Invalid seats', `Seats must be between 1 and ${offlineBus.seats}.`);
+      return;
+    }
+
+    const startIndex = (offlineBus.stops || []).indexOf(startStop);
+    const endIndex = (offlineBus.stops || []).indexOf(endStop);
+    if (startIndex === -1 || endIndex === -1 || startIndex >= endIndex) {
+      Alert.alert('Invalid route', 'Choose valid start and end stops in route order.');
+      return;
+    }
+
+    try {
+      const offlineTicket = buildOfflineTicketPayload({
+        bus: offlineBus,
+        bookingForm: { ...bookingForm, travelDate, timingLabel, startStop, endStop, seats: String(seatsRequested) },
+      });
+      setGeneratedTicket(offlineTicket);
+    } catch (error) {
+      Alert.alert('Ticket generation failed', error.message);
+    }
+  };
+
+  return (
+    <ScrollView contentContainerStyle={[styles.scrollContent, compact && styles.offlineCompactContent]}>
+      <Card>
+        <SectionTitle
+          title="Offline booking"
+          description="Scan bus QR with embedded route data and generate an offline ticket."
+        />
+        <Text style={styles.helperText}>No network is needed after scanning a supported bus QR.</Text>
+        <View style={styles.rowButtons}>
+          <PrimaryButton label="Scan bus QR" onPress={() => setScannerOpen(true)} style={styles.flexButton} />
+          {onClose ? (
+            <Pressable style={styles.secondaryAction} onPress={onClose}>
+              <Text style={styles.secondaryActionText}>Close</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </Card>
+
+      {offlineBus ? (
+        <>
+          <BusDetailsCard bus={offlineBus} hideActions />
+          <Card>
+            <SectionTitle title="Book offline ticket" description="Select date, timing and stops. This ticket is generated locally." />
+            <View style={styles.infoRow}>
+              {(offlineBus.timings || [{ label: humanTimeRange(offlineBus.startTime, offlineBus.endTime) }]).map((timing) => (
+                <PillButton
+                  key={timing.label}
+                  label={timing.label}
+                  active={bookingForm.timingLabel === timing.label}
+                  onPress={() => setBookingForm((current) => ({ ...current, timingLabel: timing.label }))}
+                />
+              ))}
+            </View>
+            <Field
+              label="Travel date"
+              value={bookingForm.travelDate}
+              onChangeText={(travelDate) => setBookingForm((current) => ({ ...current, travelDate }))}
+              placeholder="YYYY-MM-DD"
+            />
+            <Field
+              label="Seats"
+              value={bookingForm.seats}
+              onChangeText={(seats) => setBookingForm((current) => ({ ...current, seats }))}
+              keyboardType="number-pad"
+              placeholder="1"
+            />
+
+            <Text style={styles.sectionMiniLabel}>Start stop</Text>
+            <View style={styles.stopWrap}>
+              {(offlineBus.stops || []).map((stop) => (
+                <PillButton
+                  key={`offline-start-${stop}`}
+                  label={stop}
+                  active={bookingForm.startStop === stop}
+                  onPress={() => setBookingForm((current) => ({ ...current, startStop: stop }))}
+                />
+              ))}
+            </View>
+
+            <Text style={styles.sectionMiniLabel}>End stop</Text>
+            <View style={styles.stopWrap}>
+              {(offlineBus.stops || []).map((stop) => (
+                <PillButton
+                  key={`offline-end-${stop}`}
+                  label={stop}
+                  active={bookingForm.endStop === stop}
+                  onPress={() => setBookingForm((current) => ({ ...current, endStop: stop }))}
+                />
+              ))}
+            </View>
+
+            <PrimaryButton label="Generate offline ticket" onPress={createOfflineBooking} />
+          </Card>
+        </>
+      ) : null}
+
+      {generatedTicket ? (
+        <Card>
+          <SectionTitle title="Offline ticket" description="Show this QR to admin for verification." />
+          <View style={styles.ticketMetaGrid}>
+            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Ticket</Text><Text style={styles.ticketMetaValueSmall}>#{generatedTicket.id.slice(-8)}</Text></View>
+            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Bus</Text><Text style={styles.ticketMetaValue}>{generatedTicket.busNumber}</Text></View>
+            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{generatedTicket.otp}</Text></View>
+            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValueSmall}>Offline</Text></View>
+          </View>
+
+          <View style={styles.localQrWrap}>
+            <SvgQRCode value={JSON.stringify(generatedTicket)} size={220} />
+          </View>
+
+          <Text style={styles.helperText}>Route: {generatedTicket.startStop} to {generatedTicket.endStop} • Seats: {generatedTicket.seats}</Text>
+          <Text style={styles.helperText}>Validity: {formatDateTime(generatedTicket.validFrom)} - {formatDateTime(generatedTicket.validTo)}</Text>
+        </Card>
+      ) : null}
+
+      {scannerOpen ? (
+        <ScannerPanel
+          purpose="offline-bus"
+          label="Scan bus QR"
+          description="Scan a bus QR to load offline route details."
+          onClose={() => setScannerOpen(false)}
+          onMatch={handleOfflineBusScan}
+        />
+      ) : null}
+    </ScrollView>
   );
 }
 
@@ -553,7 +813,7 @@ function LiveTrackingPanel({ ticket, onClose }) {
   );
 }
 
-function AuthScreen({ onAuthed }) {
+function AuthScreen({ onAuthed, onOpenOfflineBooking }) {
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState(authInitialState);
   const [loading, setLoading] = useState(false);
@@ -561,6 +821,11 @@ function AuthScreen({ onAuthed }) {
 
   const submit = async () => {
     try {
+      if (mode === 'login' && !selectedLoginChoice) {
+        Alert.alert('Select login type', 'Please select either User login or Admin login before continuing.');
+        return;
+      }
+
       setLoading(true);
       const payload = {
         email: form.email.trim(),
@@ -625,6 +890,10 @@ function AuthScreen({ onAuthed }) {
             </Pressable>
           </View>
         ) : null}
+
+        <Pressable style={styles.offlineEntryButton} onPress={onOpenOfflineBooking}>
+          <Text style={styles.offlineEntryButtonText}>Offline booking</Text>
+        </Pressable>
       </View>
 
     </ScrollView>
@@ -647,6 +916,7 @@ function UserDashboard({ session, onLogout }) {
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [categoryPageOpen, setCategoryPageOpen] = useState(false);
   const [refreshingTicket, setRefreshingTicket] = useState(false);
+  const [offlineBookingOpen, setOfflineBookingOpen] = useState(false);
 
   const loadMyBookings = async () => {
     try {
@@ -791,17 +1061,33 @@ function UserDashboard({ session, onLogout }) {
 
   const createBooking = async () => {
     try {
+      if (!selectedBus) {
+        Alert.alert('Missing details', 'Please search or scan a bus before booking.');
+        return;
+      }
+
+      const travelDate = String(bookingForm.travelDate || '').trim();
+      const timingLabel = String(bookingForm.timingLabel || '').trim();
+      const startStop = String(bookingForm.startStop || '').trim();
+      const endStop = String(bookingForm.endStop || '').trim();
+      const seats = Number(bookingForm.seats);
+
+      if (!travelDate || !timingLabel || !startStop || !endStop || !Number.isInteger(seats) || seats < 1) {
+        Alert.alert('Missing details', 'Please fill all booking details before booking.');
+        return;
+      }
+
       setLoading(true);
       const data = await requestJson('/bookings', {
         method: 'POST',
         token: session.token,
         body: {
           busId: selectedBus._id,
-          travelDate: bookingForm.travelDate,
-          timingLabel: bookingForm.timingLabel,
-          startStop: bookingForm.startStop,
-          endStop: bookingForm.endStop,
-          seats: Number(bookingForm.seats),
+          travelDate,
+          timingLabel,
+          startStop,
+          endStop,
+          seats,
         },
       });
 
@@ -849,6 +1135,7 @@ function UserDashboard({ session, onLogout }) {
         <PillButton label="Search bus" active={activeTab === 'search'} onPress={() => setActiveTab('search')} />
         <PillButton label="Ticket" active={activeTab === 'ticket'} onPress={() => setActiveTab('ticket')} />
         <PillButton label="Scan bus" active={scannerOpen} onPress={() => setScannerOpen(true)} />
+        <PillButton label="Offline booking" active={offlineBookingOpen} onPress={() => setOfflineBookingOpen(true)} />
       </View>
 
       {activeTab === 'search' ? (
@@ -1024,6 +1311,14 @@ function UserDashboard({ session, onLogout }) {
       ) : null}
 
       {trackingTicket ? <LiveTrackingPanel ticket={trackingTicket} onClose={() => setTrackingTicket(null)} /> : null}
+
+      {offlineBookingOpen ? (
+        <Modal visible animationType="slide" onRequestClose={() => setOfflineBookingOpen(false)}>
+          <View style={styles.trackingModalScreen}>
+            <OfflineBookingFlow onClose={() => setOfflineBookingOpen(false)} compact />
+          </View>
+        </Modal>
+      ) : null}
     </ScrollView>
   );
 }
@@ -1280,6 +1575,7 @@ function AdminDashboard({ session, onLogout }) {
 
 export default function App() {
   const [session, setSession] = useState(null);
+  const [offlineBookingOpen, setOfflineBookingOpen] = useState(false);
 
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -1288,10 +1584,17 @@ export default function App() {
       <View style={styles.bgBlobTwo} />
       <ScrollView contentContainerStyle={styles.screenContent}>
         {!session ? (
-          <>
-            <AppHeader />
-            <AuthScreen onAuthed={setSession} />
-          </>
+          offlineBookingOpen ? (
+            <>
+              <AppHeader />
+              <OfflineBookingFlow onClose={() => setOfflineBookingOpen(false)} />
+            </>
+          ) : (
+            <>
+              <AppHeader />
+              <AuthScreen onAuthed={setSession} onOpenOfflineBooking={() => setOfflineBookingOpen(true)} />
+            </>
+          )
         ) : session.user.role === 'admin' ? (
           <AdminDashboard session={session} onLogout={() => setSession(null)} />
         ) : (
@@ -1553,6 +1856,19 @@ const styles = StyleSheet.create({
   loginChoiceButtonTextActive: {
     color: '#F8FAFC',
   },
+  offlineEntryButton: {
+    borderWidth: 1,
+    borderColor: 'rgba(125, 211, 252, 0.42)',
+    backgroundColor: '#081427',
+    borderRadius: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offlineEntryButtonText: {
+    color: '#BAE6FD',
+    fontWeight: '800',
+  },
   sectionTitleWrap: {
     gap: 6,
   },
@@ -1600,6 +1916,58 @@ const styles = StyleSheet.create({
   },
   scannerCard: {
     gap: 14,
+  },
+  scannerModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(3, 7, 18, 0.82)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  scannerModalSheet: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 28,
+    padding: 18,
+    gap: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.18)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.24,
+    shadowRadius: 28,
+    elevation: 10,
+  },
+  scannerModalHeader: {
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  scannerModalHeaderText: {
+    flex: 1,
+    gap: 4,
+  },
+  scannerModalTitle: {
+    color: '#0F172A',
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  scannerModalDescription: {
+    color: '#64748B',
+    lineHeight: 20,
+  },
+  scannerCloseButton: {
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 16,
+  },
+  scannerCloseButtonText: {
+    color: '#F8FAFC',
+    fontWeight: '800',
+  },
+  scannerPermissionContent: {
+    gap: 12,
+    paddingVertical: 20,
   },
   scannerPermissionWrap: {
     minHeight: 120,
@@ -1836,6 +2204,15 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     borderRadius: 20,
     backgroundColor: '#FFFFFF',
+  },
+  localQrWrap: {
+    alignSelf: 'center',
+    padding: 12,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+  },
+  offlineCompactContent: {
+    paddingBottom: 24,
   },
   ticketListWrap: {
     gap: 12,

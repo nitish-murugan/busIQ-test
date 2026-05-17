@@ -73,7 +73,7 @@ const busSchema = new mongoose.Schema(
 const bookingSchema = new mongoose.Schema(
   {
     bus: { type: mongoose.Schema.Types.ObjectId, ref: 'Bus', required: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     travelDate: { type: String, required: true },
     timingLabel: { type: String, required: true },
     startStop: { type: String, required: true },
@@ -85,6 +85,9 @@ const bookingSchema = new mongoose.Schema(
     validFrom: { type: Date, required: true },
     validTo: { type: Date, required: true },
     verifiedAt: { type: Date },
+    offlineMode: { type: Boolean, default: false },
+    offlineRef: { type: String, unique: true, sparse: true },
+    offlinePayload: { type: mongoose.Schema.Types.Mixed },
   },
   { timestamps: true }
 );
@@ -117,7 +120,7 @@ async function ensureDefaultAdmin() {
 }
 
 function createToken(user) {
-  return jwt.sign({ id: user._id.toString(), role: user.role }, jwtSecret, { expiresIn: '7d' });
+  return jwt.sign({ id: user._id.toString(), role: user.role }, jwtSecret, { expiresIn: '30d' });
 }
 
 function buildPublicUser(user) {
@@ -159,6 +162,32 @@ function createOtp() {
 
 function createQrToken(prefix, id) {
   return `${prefix}:${id}`;
+}
+
+function buildBusQrPayload(busDoc) {
+  const bus = typeof busDoc.toObject === 'function' ? busDoc.toObject() : busDoc;
+
+  return JSON.stringify({
+    type: 'bus',
+    id: bus._id.toString(),
+    bus: {
+      _id: bus._id.toString(),
+      busNumber: bus.busNumber,
+      seats: bus.seats,
+      startTime: bus.startTime,
+      endTime: bus.endTime,
+      daily: bus.daily,
+      busType: bus.busType,
+      from: bus.from,
+      to: bus.to,
+      stops: Array.isArray(bus.stops) ? bus.stops : [],
+      timings: Array.isArray(bus.timings) ? bus.timings : [],
+    },
+  });
+}
+
+async function buildBusQrDataUrl(busDoc) {
+  return QRCode.toDataURL(buildBusQrPayload(busDoc));
 }
 
 function parseTime(dateValue, timeValue) {
@@ -258,7 +287,7 @@ app.get('/api/buses', authRequired, async (req, res) => {
         return res.json({ bus: null });
       }
 
-      const qrDataUrl = await QRCode.toDataURL(createQrToken('bus', bus._id.toString()));
+      const qrDataUrl = await buildBusQrDataUrl(bus);
       return res.json({
         bus: {
           ...bus.toObject(),
@@ -275,7 +304,7 @@ app.get('/api/buses', authRequired, async (req, res) => {
     const busesWithQr = await Promise.all(
       buses.map(async (bus) => ({
         ...bus.toObject(),
-        qrDataUrl: await QRCode.toDataURL(createQrToken('bus', bus._id.toString())),
+        qrDataUrl: await buildBusQrDataUrl(bus),
       }))
     );
 
@@ -292,7 +321,7 @@ app.get('/api/buses/:id', authRequired, async (req, res) => {
       return res.status(404).json({ message: 'Bus not found' });
     }
 
-    const qrDataUrl = await QRCode.toDataURL(createQrToken('bus', bus._id.toString()));
+    const qrDataUrl = await buildBusQrDataUrl(bus);
     return res.json({
       bus: {
         ...bus.toObject(),
@@ -352,7 +381,7 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
     bus.qrToken = createQrToken('bus', bus._id.toString());
     await bus.save();
 
-    const qrDataUrl = await QRCode.toDataURL(bus.qrToken);
+    const qrDataUrl = await buildBusQrDataUrl(bus);
 
     return res.status(201).json({
       bus: {
@@ -507,6 +536,89 @@ app.post('/api/bookings/verify', authRequired, adminOnly, async (req, res) => {
         }
       }
     } else {
+      let offlineTicketPayload = null;
+      if (typeof qrToken === 'string' && qrToken.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(qrToken);
+          if (parsed?.type === 'offline-ticket') {
+            offlineTicketPayload = parsed;
+          }
+        } catch {
+          offlineTicketPayload = null;
+        }
+      }
+
+      if (offlineTicketPayload) {
+        const ticketId = String(offlineTicketPayload.id || '').trim();
+        if (!ticketId) {
+          return res.status(400).json({ message: 'Offline ticket is missing ticket id' });
+        }
+
+        const existingOfflineBooking = await Booking.findOne({ offlineRef: ticketId }).populate('bus').populate('user', 'name email role');
+        if (existingOfflineBooking) {
+          const qrDataUrl = await QRCode.toDataURL(existingOfflineBooking.qrToken);
+          return res.status(400).json({
+            message: 'Offline ticket already verified',
+            booking: {
+              ...existingOfflineBooking.toObject(),
+              qrDataUrl,
+            },
+          });
+        }
+
+        const busId = String(offlineTicketPayload.busId || '').trim();
+        const bus = busId ? await Bus.findById(busId) : null;
+        if (!bus) {
+          return res.status(400).json({ message: 'Bus in offline ticket not found in database' });
+        }
+
+        const validFrom = new Date(offlineTicketPayload.validFrom);
+        const validTo = new Date(offlineTicketPayload.validTo);
+        if (isNaN(validFrom.getTime()) || isNaN(validTo.getTime())) {
+          return res.status(400).json({ message: 'Offline ticket has invalid validity window' });
+        }
+
+        const now = new Date();
+        if (now < validFrom || now > validTo) {
+          return res.status(400).json({ message: 'Ticket is outside the valid travel window' });
+        }
+
+        const seatsRequested = Number(offlineTicketPayload.seats || 1);
+        if (!Number.isInteger(seatsRequested) || seatsRequested < 1) {
+          return res.status(400).json({ message: 'Offline ticket seats value is invalid' });
+        }
+
+        const offlineQrToken = createQrToken('offline-ticket', ticketId);
+        const offlineBooking = await Booking.create({
+          bus: bus._id,
+          user: null,
+          travelDate: String(offlineTicketPayload.travelDate || '').trim() || validFrom.toISOString().slice(0, 10),
+          timingLabel: String(offlineTicketPayload.timingLabel || '').trim() || `${bus.startTime} - ${bus.endTime}`,
+          startStop: String(offlineTicketPayload.startStop || '').trim() || bus.stops?.[0] || 'Unknown',
+          endStop: String(offlineTicketPayload.endStop || '').trim() || bus.stops?.[bus.stops.length - 1] || 'Unknown',
+          seats: seatsRequested,
+          otp: String(offlineTicketPayload.otp || createOtp()),
+          qrToken: offlineQrToken,
+          status: 'verified',
+          validFrom,
+          validTo,
+          verifiedAt: now,
+          offlineMode: true,
+          offlineRef: ticketId,
+          offlinePayload: offlineTicketPayload,
+        });
+
+        booking = await Booking.findById(offlineBooking._id).populate('bus').populate('user', 'name email role');
+        const qrDataUrl = await QRCode.toDataURL(offlineQrToken);
+        return res.json({
+          message: 'Offline ticket verified and stored',
+          booking: {
+            ...booking.toObject(),
+            qrDataUrl,
+          },
+        });
+      }
+
       const normalizedQrToken = qrToken && !qrToken.startsWith('ticket:') ? `ticket:${qrToken}` : qrToken;
       booking = bookingId
         ? await Booking.findById(bookingId).populate('bus').populate('user', 'name email role')
