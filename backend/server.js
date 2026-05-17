@@ -53,6 +53,7 @@ const busSchema = new mongoose.Schema(
     startTime: { type: String, required: true },
     endTime: { type: String, required: true },
     daily: { type: Boolean, default: true },
+    busType: { type: String, enum: ['Local', 'TNSTC', 'Others'], default: 'Local' },
     from: { type: String, required: true, trim: true },
     to: { type: String, required: true, trim: true },
     stops: [{ type: String, trim: true }],
@@ -249,7 +250,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/buses', authRequired, async (req, res) => {
   try {
-    const { number } = req.query;
+    const { number, type } = req.query;
 
     if (number) {
       const bus = await Bus.findOne({ busNumber: number.trim() }).populate('createdBy', 'name email role');
@@ -266,7 +267,11 @@ app.get('/api/buses', authRequired, async (req, res) => {
       });
     }
 
-    const buses = await Bus.find().sort({ createdAt: -1 });
+    const filter = {};
+    if (type) {
+      filter.busType = type;
+    }
+    const buses = await Bus.find(filter).sort({ createdAt: -1 });
     const busesWithQr = await Promise.all(
       buses.map(async (bus) => ({
         ...bus.toObject(),
@@ -301,7 +306,7 @@ app.get('/api/buses/:id', authRequired, async (req, res) => {
 
 app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
   try {
-    const { busNumber, seats, startTime, endTime, startPeriod, endPeriod, daily, from, to, stops } = req.body || {};
+  const { busNumber, seats, startTime, endTime, startPeriod, endPeriod, daily, from, to, stops, busType } = req.body || {};
     const cleanStops = Array.isArray(stops) ? stops.map((stop) => String(stop).trim()).filter(Boolean) : [];
 
     if (!busNumber || !seats || !startTime || !endTime || !from || !to) {
@@ -329,6 +334,7 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
       startTime: startLabel,
       endTime: endLabel,
       daily: Boolean(daily),
+      busType: busType || 'Local',
       from: from.trim(),
       to: to.trim(),
       stops: cleanStops,

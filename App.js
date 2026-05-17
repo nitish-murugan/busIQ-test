@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View, Vibration } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 
@@ -84,6 +84,7 @@ const busInitialState = {
   startPeriod: 'AM',
   endPeriod: 'PM',
   daily: true,
+  busType: 'Local',
   from: '',
   to: '',
   stops: ['', ''],
@@ -307,7 +308,7 @@ function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
     setLocked(false);
   }, [purpose]);
 
-  const handleBarcodeScanned = ({ data }) => {
+  const handleBarcodeScanned = async ({ data }) => {
     if (locked) {
       return;
     }
@@ -319,7 +320,16 @@ function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
     }
 
     setLocked(true);
-    onMatch(parsed, data);
+    try {
+      // Wait for onMatch to finish (supports async verification), then continue
+      await Promise.resolve(onMatch(parsed, data));
+    } catch (e) {
+      // If onMatch throws, show error (it may already show alerts)
+      console.log('Scanner onMatch error:', e);
+    } finally {
+      // Small delay before unlocking to avoid duplicate rapid scans
+      setTimeout(() => setLocked(false), 600);
+    }
   };
 
   if (!permission) {
@@ -547,6 +557,7 @@ function AuthScreen({ onAuthed }) {
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState(authInitialState);
   const [loading, setLoading] = useState(false);
+  const [selectedLoginChoice, setSelectedLoginChoice] = useState(null);
 
   const submit = async () => {
     try {
@@ -575,40 +586,47 @@ function AuthScreen({ onAuthed }) {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.scrollContent}>
-      <Card style={styles.authCard}>
-        <View style={styles.modeTabs}>
-          <PillButton label="Login" active={mode === 'login'} onPress={() => setMode('login')} />
-          <PillButton label="Register" active={mode === 'register'} onPress={() => setMode('register')} />
-        </View>
-        <Text style={styles.authHeading}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</Text>
-        <Text style={styles.authText}>Use the same app for users and admins. Register once, then sign in with your role.</Text>
-        {mode === 'register' ? (
-          <Field label="Full name" value={form.name} onChangeText={(name) => setForm((current) => ({ ...current, name }))} placeholder="John Carter" />
-        ) : null}
-        <Field label="Email" value={form.email} onChangeText={(email) => setForm((current) => ({ ...current, email }))} placeholder="you@company.com" keyboardType="email-address" />
-        <Field label="Password" value={form.password} onChangeText={(password) => setForm((current) => ({ ...current, password }))} placeholder="••••••••" secureTextEntry />
-        {mode === 'register' ? (
-          <View style={styles.fieldBlock}>
-            <Text style={styles.fieldLabel}>Role</Text>
+    <ScrollView contentContainerStyle={[styles.scrollContent, styles.authScrollContent]}>
+      <View style={styles.authScreenLayout}>
+        <View style={styles.authScreenTop}>
+          <Card style={styles.authCard}>
             <View style={styles.modeTabs}>
-              <PillButton label="User" active={form.role === 'user'} onPress={() => setForm((current) => ({ ...current, role: 'user' }))} />
-              <PillButton label="Admin" active={form.role === 'admin'} onPress={() => setForm((current) => ({ ...current, role: 'admin' }))} />
+              <PillButton label="Login" active={mode === 'login'} onPress={() => setMode('login')} />
+              <PillButton label="Register" active={mode === 'register'} onPress={() => setMode('register')} />
             </View>
+            <Text style={styles.authHeading}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</Text>
+            <Text style={styles.authText}>Use the same app for users and admins. Register once, then sign in with your role.</Text>
+            {mode === 'register' ? (
+              <Field label="Full name" value={form.name} onChangeText={(name) => setForm((current) => ({ ...current, name }))} placeholder="John Carter" />
+            ) : null}
+            <Field label="Email" value={form.email} onChangeText={(email) => setForm((current) => ({ ...current, email }))} placeholder="you@company.com" keyboardType="email-address" />
+            <Field label="Password" value={form.password} onChangeText={(password) => setForm((current) => ({ ...current, password }))} placeholder="••••••••" secureTextEntry />
+            {mode === 'register' ? (
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Role</Text>
+                <View style={styles.modeTabs}>
+                  <PillButton label="User" active={form.role === 'user'} onPress={() => setForm((current) => ({ ...current, role: 'user' }))} />
+                  <PillButton label="Admin" active={form.role === 'admin'} onPress={() => setForm((current) => ({ ...current, role: 'admin' }))} />
+                </View>
+              </View>
+            ) : null}
+            <PrimaryButton label={mode === 'login' ? 'Login' : 'Register'} onPress={submit} loading={loading} />
+          </Card>
+
+        </View>
+
+        {mode === 'login' ? (
+          <View style={styles.loginChoiceDock}>
+            <Pressable onPress={() => setSelectedLoginChoice('user')} style={[styles.loginChoiceButton, selectedLoginChoice === 'user' && styles.loginChoiceButtonActive]}>
+              <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'user' && styles.loginChoiceButtonTextActive]}>User login</Text>
+            </Pressable>
+            <Pressable onPress={() => setSelectedLoginChoice('admin')} style={[styles.loginChoiceButton, selectedLoginChoice === 'admin' && styles.loginChoiceButtonActive]}>
+              <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'admin' && styles.loginChoiceButtonTextActive]}>Admin login</Text>
+            </Pressable>
           </View>
         ) : null}
-        <PrimaryButton label={mode === 'login' ? 'Login' : 'Register'} onPress={submit} loading={loading} />
-      </Card>
-      <Card style={styles.featureGrid}>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureLabel}>Admin</Text>
-          <Text style={styles.featureValue}>Add buses, manage stops, and verify QR tickets.</Text>
-        </View>
-        <View style={styles.featureItem}>
-          <Text style={styles.featureLabel}>User</Text>
-          <Text style={styles.featureValue}>Search by bus number, scan bus QR, and book instantly.</Text>
-        </View>
-      </Card>
+      </View>
+
     </ScrollView>
   );
 }
@@ -623,6 +641,12 @@ function UserDashboard({ session, onLogout }) {
   const [tickets, setTickets] = useState([]);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
   const [trackingTicket, setTrackingTicket] = useState(null);
+  const [category, setCategory] = useState(null);
+  const [categoryBuses, setCategoryBuses] = useState([]);
+  const [categorySearch, setCategorySearch] = useState('');
+  const [categoryLoading, setCategoryLoading] = useState(false);
+  const [categoryPageOpen, setCategoryPageOpen] = useState(false);
+  const [refreshingTicket, setRefreshingTicket] = useState(false);
 
   const loadMyBookings = async () => {
     try {
@@ -635,6 +659,29 @@ function UserDashboard({ session, onLogout }) {
       setSelectedTicketId((current) => current || myTickets[0]?._id || null);
     } catch (error) {
       Alert.alert('Could not load tickets', error.message);
+    }
+  };
+
+  const refreshSelectedTicket = async () => {
+    if (!selectedTicketId) {
+      // No selection; just reload all
+      return loadMyBookings();
+    }
+
+    try {
+      setRefreshingTicket(true);
+      const data = await requestJson('/bookings/me', { token: session.token });
+      const myTickets = data.bookings || [];
+      setTickets(myTickets);
+      // keep the same selectedTicketId (if exists)
+      const exists = myTickets.some((t) => t._id === selectedTicketId);
+      if (!exists) {
+        setSelectedTicketId(myTickets[0]?._id || null);
+      }
+    } catch (error) {
+      Alert.alert('Refresh failed', error.message);
+    } finally {
+      setRefreshingTicket(false);
     }
   };
 
@@ -671,6 +718,55 @@ function UserDashboard({ session, onLogout }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadBusesByType = async (type) => {
+    try {
+      setCategory(type);
+      setCategoryLoading(true);
+      const data = await requestJson(`/buses?type=${encodeURIComponent(type)}`, { token: session.token });
+      setCategoryBuses(data.buses || []);
+    } catch (error) {
+      Alert.alert('Could not load buses', error.message);
+    } finally {
+      setCategoryLoading(false);
+    }
+  };
+
+  const searchBusInCategory = async () => {
+    if (!categorySearch.trim()) {
+      return loadBusesByType(category || 'Local');
+    }
+
+    try {
+      setCategoryLoading(true);
+      const data = await requestJson(`/buses?number=${encodeURIComponent(categorySearch.trim())}`, { token: session.token });
+      if (data.bus) {
+        setCategoryBuses([data.bus]);
+      } else {
+        setCategoryBuses([]);
+        Alert.alert('No bus found', 'No bus matched that number');
+      }
+    } catch (error) {
+      Alert.alert('Search failed', error.message);
+    } finally {
+      setCategoryLoading(false);
+    }
+  };
+
+  const openCategory = (type) => {
+    setCategory(type);
+    setCategorySearch('');
+    setCategoryPageOpen(true);
+    loadBusesByType(type);
+  };
+
+  const closeCategory = () => {
+    setCategoryPageOpen(false);
+    setCategoryBuses([]);
+    setCategoryLoading(false);
+    setCategorySearch('');
+    // leave `category` so last opened remains known if needed
   };
 
   const handleBusScan = async ({ id }) => {
@@ -756,22 +852,78 @@ function UserDashboard({ session, onLogout }) {
       </View>
 
       {activeTab === 'search' ? (
-        <Card>
-          <SectionTitle title="Find your route" description="Search by bus number or scan the bus QR to load its stops and schedule." />
-          <Field label="Bus number" value={searchValue} onChangeText={setSearchValue} placeholder="BUS-101" />
-          <View style={styles.rowButtons}>
-            <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
-            <Pressable
-              style={styles.secondaryAction}
-              onPress={() => {
-                setScannerOpen(true);
-              }}
-            >
-              <Text style={styles.secondaryActionText}>Scan QR</Text>
-            </Pressable>
-          </View>
-          {selectedBus ? <BusDetailsCard bus={selectedBus} onStartBooking={() => setActiveTab('ticket')} /> : <Text style={styles.helperText}>Search a bus to start a booking.</Text>}
-        </Card>
+        <>
+          <Card>
+            <SectionTitle title="Bus Types" description="Pick a category to list buses." />
+            <View style={{ flexDirection: 'column', gap: 10 }}>
+              <PrimaryButton label="Local Bus" onPress={() => openCategory('Local')} loading={categoryLoading && category === 'Local'} />
+              <PrimaryButton label="TNSTC Bus" onPress={() => openCategory('TNSTC')} loading={categoryLoading && category === 'TNSTC'} />
+              <PrimaryButton label="Others" onPress={() => openCategory('Others')} loading={categoryLoading && category === 'Others'} />
+            </View>
+          </Card>
+
+          <Modal visible={categoryPageOpen} animationType="slide" onRequestClose={closeCategory}>
+            <ScrollView contentContainerStyle={styles.scrollContent}>
+              <View style={{ padding: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Pressable onPress={closeCategory} style={styles.secondaryAction}>
+                    <Text style={styles.secondaryActionText}>Back</Text>
+                  </Pressable>
+                  <SectionTitle title={`${category || ''} buses`} description={`Listing ${category || ''} buses`} />
+                  <View style={{ width: 60 }} />
+                </View>
+
+                <View style={{ marginBottom: 12 }}>
+                  <Field label="Search bus number" value={categorySearch} onChangeText={setCategorySearch} placeholder="BUS-101" />
+                </View>
+
+                <View style={[styles.rowButtons, styles.modalRowButtons]}>
+                  <PrimaryButton label="Search" onPress={searchBusInCategory} loading={categoryLoading} style={styles.flexButton} />
+                  <Pressable style={styles.secondaryAction} onPress={() => { setCategorySearch(''); loadBusesByType(category || 'Local'); }}>
+                    <Text style={styles.secondaryActionText}>Clear</Text>
+                  </Pressable>
+                </View>
+
+                {categoryLoading ? (
+                  <Text style={[styles.helperText, { marginTop: 12 }]}>Please wait…</Text>
+                ) : null}
+
+                {categoryBuses.length ? (
+                  <View style={styles.categoryListWrap}>
+                    {categoryBuses.map((bus) => (
+                      <View key={bus._id} style={[styles.ticketListItem, styles.busListItem, { marginBottom: 12 }]}> 
+                        <View style={styles.busTopRow}>
+                          <View>
+                            <Text style={styles.cardTitle}>{bus.busNumber}</Text>
+                            <Text style={styles.cardSubtitle}>{bus.from} → {bus.to}</Text>
+                          </View>
+                          <PrimaryButton label="Select" onPress={() => { setSelectedBus(bus); setCategoryPageOpen(false); }} style={styles.selectButton} />
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                ) : (!categoryLoading && <Text style={[styles.helperText, { marginTop: 12 }]}>No buses in this category.</Text>)}
+              </View>
+            </ScrollView>
+          </Modal>
+
+          <Card>
+            <SectionTitle title="Find your route" description="Search by bus number or scan the bus QR to load its stops and schedule." />
+            <Field label="Bus number" value={searchValue} onChangeText={setSearchValue} placeholder="BUS-101" />
+            <View style={styles.rowButtons}>
+              <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
+              <Pressable
+                style={styles.secondaryAction}
+                onPress={() => {
+                  setScannerOpen(true);
+                }}
+              >
+                <Text style={styles.secondaryActionText}>Scan QR</Text>
+              </Pressable>
+            </View>
+            {selectedBus ? <BusDetailsCard bus={selectedBus} onStartBooking={() => setActiveTab('ticket')} /> : <Text style={styles.helperText}>Search a bus to start a booking.</Text>}
+          </Card>
+        </>
       ) : null}
 
       {selectedBus ? (
@@ -846,6 +998,7 @@ function UserDashboard({ session, onLogout }) {
                     <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{selectedTicket.status}</Text></View>
                     <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Validity</Text><Text style={styles.ticketMetaValueSmall}>{ticketValidity}</Text></View>
                   </View>
+                  <PrimaryButton label="Refresh status" onPress={refreshSelectedTicket} loading={refreshingTicket} />
                   {selectedTicket.qrDataUrl ? <Image source={{ uri: selectedTicket.qrDataUrl }} style={styles.ticketQrImage} /> : null}
                   <Text style={styles.helperText}>Route: {selectedTicket.startStop} to {selectedTicket.endStop} • Seats: {selectedTicket.seats}</Text>
                 </>
@@ -927,6 +1080,7 @@ function AdminDashboard({ session, onLogout }) {
           endTime: form.endTime,
           endPeriod: form.endPeriod,
           daily: form.daily,
+          busType: form.busType,
           from: form.from.trim(),
           to: form.to.trim(),
           stops,
@@ -952,11 +1106,18 @@ function AdminDashboard({ session, onLogout }) {
         token: session.token,
         body: { qrToken: rawValue || `ticket:${id}` },
       });
+      // Successful verification: vibrate once and continue scanning
+      try {
+        Vibration.vibrate(100);
+      } catch (e) {
+        console.log('Vibration failed', e);
+      }
 
-      setVerifiedTicket(data.booking);
-      setScannerOpen(false);
-      setActiveTab('verify');
+      // Do not show ticket details or close the scanner — continue scanning
+      // Optionally store last verified ticket briefly (not exposing sensitive fields)
+      // setVerifiedTicket(data.booking);
     } catch (error) {
+      // If verification failed (already verified / outside window / not found), show alert
       Alert.alert('Verification failed', error.message);
     } finally {
       setLoading(false);
@@ -1031,6 +1192,14 @@ function AdminDashboard({ session, onLogout }) {
                   <Text style={styles.periodText}>{form.endPeriod || 'PM'}</Text>
                 </Pressable>
               </View>
+            </View>
+          </View>
+          <View style={{ marginVertical: 8 }}>
+            <Text style={styles.fieldLabel}>Bus type</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              <PillButton label="Local Bus" active={form.busType === 'Local'} onPress={() => setForm((c) => ({ ...c, busType: 'Local' }))} />
+              <PillButton label="TNSTC Bus" active={form.busType === 'TNSTC'} onPress={() => setForm((c) => ({ ...c, busType: 'TNSTC' }))} />
+              <PillButton label="Others" active={form.busType === 'Others'} onPress={() => setForm((c) => ({ ...c, busType: 'Others' }))} />
             </View>
           </View>
           <View style={styles.splitRow}>
@@ -1145,6 +1314,17 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 28,
+    gap: 16,
+  },
+  authScrollContent: {
+    flexGrow: 1,
+  },
+  authScreenLayout: {
+    flex: 1,
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  authScreenTop: {
     gap: 16,
   },
   bgBlobOne: {
@@ -1346,6 +1526,33 @@ const styles = StyleSheet.create({
     color: '#E2E8F0',
     lineHeight: 20,
   },
+  loginChoiceDock: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 'auto',
+    marginBottom: 0,
+  },
+  loginChoiceButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loginChoiceButtonActive: {
+    backgroundColor: '#E2E8F0',
+    borderColor: '#94A3B8',
+  },
+  loginChoiceButtonText: {
+    color: '#0F172A',
+    fontWeight: '800',
+  },
+  loginChoiceButtonTextActive: {
+    color: '#F8FAFC',
+  },
   sectionTitleWrap: {
     gap: 6,
   },
@@ -1463,6 +1670,16 @@ const styles = StyleSheet.create({
     gap: 10,
     flexWrap: 'wrap',
     alignItems: 'center',
+  },
+  modalRowButtons: {
+    marginTop: 8,
+  },
+  categoryListWrap: {
+    marginTop: 12,
+  },
+  selectButton: {
+    paddingHorizontal: 22,
+    minWidth: 110,
   },
   flexButton: {
     flexGrow: 1,
