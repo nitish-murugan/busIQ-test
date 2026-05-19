@@ -503,6 +503,125 @@ function BusDetailsCard({ bus, onStartBooking, hideActions = false }) {
   );
 }
 
+function RouteAssistantLauncher({ session }) {
+  const [open, setOpen] = useState(false);
+  const [fromCity, setFromCity] = useState('');
+  const [toCity, setToCity] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [routeResult, setRouteResult] = useState(null);
+  const [routeError, setRouteError] = useState('');
+
+  useEffect(() => {
+    if (open) {
+      setRouteError('');
+    }
+  }, [open]);
+
+  const analyzeRoute = async () => {
+    const from = String(fromCity || '').trim();
+    const to = String(toCity || '').trim();
+
+    if (!from || !to) {
+      setRouteError('Please enter both From city and To city.');
+      setRouteResult(null);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setRouteError('');
+      const data = await requestJson('/routes/plan', {
+        method: 'POST',
+        token: session.token,
+        body: {
+          fromCity: from,
+          toCity: to,
+        },
+      });
+
+      setRouteResult(data.route || null);
+    } catch (error) {
+      setRouteResult(null);
+      setRouteError(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <Pressable style={styles.aiLauncherButton} onPress={() => setOpen(true)}>
+        <Text style={styles.aiLauncherButtonText}>AI</Text>
+      </Pressable>
+
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <View style={styles.aiModalBackdrop}>
+          <KeyboardAvoidingView style={styles.aiModalShell} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View style={styles.aiModalCard}>
+              <View style={styles.aiModalHeader}>
+                <View style={styles.aiModalHeaderText}>
+                  <Text style={styles.kicker}>Route assistant</Text>
+                  <Text style={styles.aiModalTitle}>Find the bus chain</Text>
+                  <Text style={styles.aiModalSubtitle}>Enter the from and to cities. I’ll search the stored buses and transfer stops.</Text>
+                </View>
+                <Pressable onPress={() => setOpen(false)} style={styles.secondaryAction}>
+                  <Text style={styles.secondaryActionText}>Close</Text>
+                </Pressable>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.aiModalContent} showsVerticalScrollIndicator={false}>
+                <View style={styles.aiBubbleAssistant}>
+                  <Text style={styles.aiBubbleText}>Tell me where you want to start and where you want to go. I will only return bus hops and transfer points.</Text>
+                </View>
+
+                <Field label="From city" value={fromCity} onChangeText={setFromCity} placeholder="City A" />
+                <Field label="To city" value={toCity} onChangeText={setToCity} placeholder="City C" />
+
+                <PrimaryButton label="Analyze route" onPress={analyzeRoute} loading={loading} />
+
+                {routeError ? (
+                  <View style={styles.aiBubbleUser}>
+                    <Text style={styles.aiBubbleUserText}>{routeError}</Text>
+                  </View>
+                ) : null}
+
+                {routeResult ? (
+                  <>
+                    <View style={styles.aiBubbleAssistant}>
+                      <Text style={styles.aiBubbleText}>
+                        {routeResult.found
+                          ? routeResult.summary
+                          : routeResult.message || 'No connected route found.'}
+                      </Text>
+                    </View>
+                    {routeResult.found ? (
+                      <View style={styles.aiRouteList}>
+                        <View style={styles.aiRouteHeaderBox}>
+                          <Text style={styles.aiRouteBusesLabel}>Buses required:</Text>
+                          <Text style={styles.aiRouteAllBuses}>
+                            {routeResult.segments.map((seg) => seg.busNumber).join(' → ')}
+                          </Text>
+                        </View>
+                        <Text style={styles.aiRouteMeta}>{routeResult.transfers ? `${routeResult.transfers} transfer${routeResult.transfers === 1 ? '' : 's'}` : 'Direct route'}</Text>
+                        {routeResult.segments.map((segment, index) => (
+                          <View key={`${segment.busId}-${index}`} style={styles.aiRouteSegment}>
+                            <Text style={styles.aiRouteSegmentTitle}>Bus {segment.busNumber}</Text>
+                            <Text style={styles.aiRouteSegmentText}>{segment.routeStops.join(' → ')}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                  </>
+                ) : null}
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+    </>
+  );
+}
+
 function OfflineBookingFlow({ onClose, compact = false }) {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [offlineBus, setOfflineBus] = useState(null);
@@ -1147,21 +1266,11 @@ function UserDashboard({ session, onLogout }) {
       <View style={styles.tabRow}>
         <PillButton label="Search bus" active={activeTab === 'search'} onPress={() => setActiveTab('search')} />
         <PillButton label="Ticket" active={activeTab === 'ticket'} onPress={() => setActiveTab('ticket')} />
-        <PillButton label="Scan bus" active={scannerOpen} onPress={() => setScannerOpen(true)} />
         <PillButton label="Offline booking" active={offlineBookingOpen} onPress={() => setOfflineBookingOpen(true)} />
       </View>
 
       {activeTab === 'search' ? (
         <>
-          <Card>
-            <SectionTitle title="Bus Types" description="Pick a category to list buses." />
-            <View style={{ flexDirection: 'column', gap: 10 }}>
-              <PrimaryButton label="Local Bus" onPress={() => openCategory('Local')} loading={categoryLoading && category === 'Local'} />
-              <PrimaryButton label="TNSTC Bus" onPress={() => openCategory('TNSTC')} loading={categoryLoading && category === 'TNSTC'} />
-              <PrimaryButton label="Others" onPress={() => openCategory('Others')} loading={categoryLoading && category === 'Others'} />
-            </View>
-          </Card>
-
           <Modal visible={categoryPageOpen} animationType="slide" onRequestClose={closeCategory}>
             <ScrollView contentContainerStyle={styles.scrollContent}>
               <View style={{ padding: 16 }}>
@@ -1209,7 +1318,6 @@ function UserDashboard({ session, onLogout }) {
 
           <Card>
             <SectionTitle title="Find your route" description="Search by bus number or scan the bus QR to load its stops and schedule." />
-            <Field label="Bus number" value={searchValue} onChangeText={setSearchValue} placeholder="BUS-101" />
             <View style={styles.rowButtons}>
               <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
               <Pressable
@@ -1553,14 +1661,6 @@ function AdminDashboard({ session, onLogout }) {
               </View>
             </View>
           </View>
-          <View style={{ marginVertical: 8 }}>
-            <Text style={styles.fieldLabel}>Bus type</Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-              <PillButton label="Local Bus" active={form.busType === 'Local'} onPress={() => setForm((c) => ({ ...c, busType: 'Local' }))} />
-              <PillButton label="TNSTC Bus" active={form.busType === 'TNSTC'} onPress={() => setForm((c) => ({ ...c, busType: 'TNSTC' }))} />
-              <PillButton label="Others" active={form.busType === 'Others'} onPress={() => setForm((c) => ({ ...c, busType: 'Others' }))} />
-            </View>
-          </View>
           <View style={styles.splitRow}>
             <Field label="From" value={form.from} onChangeText={(from) => setForm((current) => ({ ...current, from }))} placeholder="City A" />
             <Field label="To" value={form.to} onChangeText={(to) => setForm((current) => ({ ...current, to }))} placeholder="City B" />
@@ -1674,25 +1774,28 @@ export default function App() {
       <StatusBar style="light" />
       <View style={styles.bgBlobOne} />
       <View style={styles.bgBlobTwo} />
-      <ScrollView contentContainerStyle={styles.screenContent}>
-        {!session ? (
-          offlineBookingOpen ? (
-            <>
-              <AppHeader />
-              <OfflineBookingFlow onClose={() => setOfflineBookingOpen(false)} />
-            </>
+      <View style={styles.appShell}>
+        <ScrollView contentContainerStyle={styles.screenContent}>
+          {!session ? (
+            offlineBookingOpen ? (
+              <>
+                <AppHeader />
+                <OfflineBookingFlow onClose={() => setOfflineBookingOpen(false)} />
+              </>
+            ) : (
+              <>
+                <AppHeader />
+                <AuthScreen onAuthed={setSession} onOpenOfflineBooking={() => setOfflineBookingOpen(true)} />
+              </>
+            )
+          ) : session.user.role === 'admin' ? (
+            <AdminDashboard session={session} onLogout={() => setSession(null)} />
           ) : (
-            <>
-              <AppHeader />
-              <AuthScreen onAuthed={setSession} onOpenOfflineBooking={() => setOfflineBookingOpen(true)} />
-            </>
-          )
-        ) : session.user.role === 'admin' ? (
-          <AdminDashboard session={session} onLogout={() => setSession(null)} />
-        ) : (
-          <UserDashboard session={session} onLogout={() => setSession(null)} />
-        )}
-      </ScrollView>
+            <UserDashboard session={session} onLogout={() => setSession(null)} />
+          )}
+        </ScrollView>
+        {session ? <RouteAssistantLauncher session={session} /> : null}
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -1701,6 +1804,10 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: '#07111F',
+  },
+  appShell: {
+    flex: 1,
+    position: 'relative',
   },
   screenContent: {
     flexGrow: 1,
@@ -2238,6 +2345,142 @@ const styles = StyleSheet.create({
   },
   busActionButton: {
     marginTop: 4,
+  },
+  aiLauncherButton: {
+    position: 'absolute',
+    right: 18,
+    bottom: 18,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#22C55E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.28,
+    shadowRadius: 16,
+    elevation: 8,
+    zIndex: 50,
+  },
+  aiLauncherButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    letterSpacing: 1,
+    fontSize: 16,
+  },
+  aiModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(7, 17, 31, 0.72)',
+    justifyContent: 'flex-end',
+  },
+  aiModalShell: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  aiModalCard: {
+    backgroundColor: '#F8FAFC',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 24,
+    maxHeight: '88%',
+    gap: 16,
+  },
+  aiModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  aiModalHeaderText: {
+    flex: 1,
+    gap: 6,
+  },
+  aiModalTitle: {
+    color: '#0F172A',
+    fontSize: 24,
+    fontWeight: '900',
+  },
+  aiModalSubtitle: {
+    color: '#475569',
+    lineHeight: 20,
+  },
+  aiModalContent: {
+    gap: 14,
+    paddingBottom: 8,
+  },
+  aiBubbleAssistant: {
+    backgroundColor: '#E0F2FE',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 20,
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+  },
+  aiBubbleText: {
+    color: '#0F172A',
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+  aiBubbleUser: {
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 20,
+    alignSelf: 'flex-end',
+    maxWidth: '100%',
+  },
+  aiBubbleUserText: {
+    color: '#F8FAFC',
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  aiRouteList: {
+    gap: 10,
+    marginTop: 6,
+  },
+  aiRouteHeaderBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: 2,
+    borderColor: '#22C55E',
+    gap: 6,
+  },
+  aiRouteBusesLabel: {
+    color: '#475569',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  aiRouteAllBuses: {
+    color: '#0F172A',
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  aiRouteMeta: {
+    color: '#0F172A',
+    fontWeight: '800',
+  },
+  aiRouteSegment: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    gap: 4,
+  },
+  aiRouteSegmentTitle: {
+    color: '#0F172A',
+    fontWeight: '900',
+  },
+  aiRouteSegmentText: {
+    color: '#475569',
+    lineHeight: 18,
   },
   tabRow: {
     flexDirection: 'row',

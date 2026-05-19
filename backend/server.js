@@ -170,6 +170,174 @@ function createQrToken(prefix, id) {
   return `${prefix}:${id}`;
 }
 
+function normalizeRouteLabel(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function getBusStopLabel(stop) {
+  if (typeof stop === 'string') {
+    return stop.trim();
+  }
+
+  if (stop && typeof stop === 'object') {
+    return String(stop.name || '').trim();
+  }
+
+  return '';
+}
+
+function buildBusRouteSequence(bus) {
+  const sequence = [];
+
+  const append = (value) => {
+    const label = String(value || '').trim();
+    if (!label) {
+      return;
+    }
+
+    const normalized = normalizeRouteLabel(label);
+    const previous = sequence[sequence.length - 1];
+    if (previous && previous.normalized === normalized) {
+      return;
+    }
+
+    sequence.push({ name: label, normalized });
+  };
+
+  append(bus.from);
+  (Array.isArray(bus.stops) ? bus.stops : []).forEach((stop) => append(getBusStopLabel(stop)));
+  append(bus.to);
+
+  return sequence;
+}
+
+function buildRouteGraph(buses) {
+  const graph = new Map();
+
+  const addEdge = (from, edge) => {
+    const current = graph.get(from) || [];
+    current.push(edge);
+    graph.set(from, current);
+  };
+
+  buses.forEach((bus) => {
+    const routeSequence = buildBusRouteSequence(bus);
+
+    for (let fromIndex = 0; fromIndex < routeSequence.length - 1; fromIndex += 1) {
+      for (let toIndex = fromIndex + 1; toIndex < routeSequence.length; toIndex += 1) {
+        const routeStops = routeSequence.slice(fromIndex, toIndex + 1).map((stop) => stop.name);
+
+        addEdge(routeSequence[fromIndex].normalized, {
+          to: routeSequence[toIndex].normalized,
+          fromStop: routeSequence[fromIndex].name,
+          toStop: routeSequence[toIndex].name,
+          busId: bus._id.toString(),
+          busNumber: bus.busNumber,
+          routeStops,
+        });
+      }
+    }
+  });
+
+  return graph;
+}
+
+function formatRouteSummary(routeSegments) {
+  if (!routeSegments.length) {
+    return '';
+  }
+
+  return routeSegments
+    .map((segment, index) => {
+      const routeText = segment.routeStops.join(' -> ');
+      if (index === 0) {
+        return `Take Bus ${segment.busNumber} from ${segment.fromStop} to ${segment.toStop}${routeText ? ` via ${routeText}` : ''}.`;
+      }
+
+      return `Then switch to Bus ${segment.busNumber} at ${segment.fromStop} and continue to ${segment.toStop}${routeText ? ` via ${routeText}` : ''}.`;
+    })
+    .join(' ');
+}
+
+function findRoutePlan(buses, fromCity, toCity) {
+  const startLabel = String(fromCity || '').trim();
+  const endLabel = String(toCity || '').trim();
+
+  if (!startLabel || !endLabel) {
+    return { error: 'From city and To city are required' };
+  }
+
+  const startKey = normalizeRouteLabel(startLabel);
+  const endKey = normalizeRouteLabel(endLabel);
+
+  if (startKey === endKey) {
+    return { error: 'From city and To city must be different' };
+  }
+
+  const graph = buildRouteGraph(buses);
+  const queue = [startKey];
+  const visited = new Set([startKey]);
+  const previous = new Map();
+
+  while (queue.length) {
+    const current = queue.shift();
+
+    if (current === endKey) {
+      break;
+    }
+
+    const edges = graph.get(current) || [];
+    edges.forEach((edge) => {
+      if (visited.has(edge.to)) {
+        return;
+      }
+
+      visited.add(edge.to);
+      previous.set(edge.to, { from: current, edge });
+      queue.push(edge.to);
+    });
+  }
+
+  if (!visited.has(endKey)) {
+    return {
+      found: false,
+      from: startLabel,
+      to: endLabel,
+      message: `No connected bus route found from ${startLabel} to ${endLabel}.`,
+    };
+  }
+
+  const routeSegments = [];
+  let current = endKey;
+
+  while (current !== startKey) {
+    const step = previous.get(current);
+    if (!step) {
+      break;
+    }
+
+    routeSegments.push({
+      busId: step.edge.busId,
+      busNumber: step.edge.busNumber,
+      fromStop: step.edge.fromStop,
+      toStop: step.edge.toStop,
+      routeStops: step.edge.routeStops,
+    });
+    current = step.from;
+  }
+
+  routeSegments.reverse();
+
+  return {
+    found: true,
+    from: startLabel,
+    to: endLabel,
+    transfers: Math.max(0, routeSegments.length - 1),
+    segments: routeSegments,
+    summary: formatRouteSummary(routeSegments),
+  };
+}
+
 function buildBusQrPayload(busDoc) {
   const bus = typeof busDoc.toObject === 'function' ? busDoc.toObject() : busDoc;
 
@@ -334,6 +502,21 @@ app.get('/api/buses/:id', authRequired, async (req, res) => {
         qrDataUrl,
       },
     });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.post('/api/routes/plan', authRequired, async (req, res) => {
+  try {
+    const { from, to, fromCity, toCity } = req.body || {};
+    const plan = findRoutePlan(await Bus.find({}), from || fromCity, to || toCity);
+
+    if (plan.error) {
+      return res.status(400).json({ message: plan.error });
+    }
+
+    return res.json({ route: plan });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
