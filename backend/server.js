@@ -1192,7 +1192,7 @@ app.post('/api/bookings/verify', authRequired, conductorOrAdmin, async (req, res
       },
     });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return res.status(500).json({ message: "Failed to valid" });
   }
 });
 
