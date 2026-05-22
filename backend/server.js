@@ -572,6 +572,195 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.get('/api/auth/admin', (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Setup</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      width: 100%;
+      max-width: 400px;
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 8px;
+      font-size: 24px;
+      font-weight: 600;
+    }
+    p {
+      color: #666;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      color: #333;
+      margin-bottom: 6px;
+      font-size: 14px;
+      font-weight: 500;
+    }
+    input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.1s;
+    }
+    button:hover {
+      transform: translateY(-1px);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    .message {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      text-align: center;
+    }
+    .success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Admin Setup</h1>
+    <p>Create a new admin account</p>
+    <form id="adminForm">
+      <div class="form-group">
+        <label for="name">Name</label>
+        <input type="text" id="name" name="name" required placeholder="Enter name">
+      </div>
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required placeholder="Enter email">
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required placeholder="Enter password">
+      </div>
+      <button type="submit">Create Admin</button>
+    </form>
+    <div id="message"></div>
+  </div>
+  <script>
+    document.getElementById('adminForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const messageDiv = document.getElementById('message');
+      const button = e.target.querySelector('button');
+      
+      const name = document.getElementById('name').value;
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      
+      button.disabled = true;
+      button.textContent = 'Creating...';
+      
+      try {
+        const response = await fetch('/api/auth/admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, password })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+          messageDiv.className = 'message success';
+          messageDiv.textContent = 'Admin account created successfully!';
+          e.target.reset();
+        } else {
+          messageDiv.className = 'message error';
+          messageDiv.textContent = data.message || 'Failed to create admin';
+        }
+      } catch (error) {
+        messageDiv.className = 'message error';
+        messageDiv.textContent = 'Network error. Please try again.';
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Create Admin';
+      }
+    });
+  </script>
+</body>
+</html>
+  `);
+});
+
+app.post('/api/auth/admin', async (req, res) => {
+  try {
+    const { name, email, password } = req.body || {};
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Name, email, and password are required' });
+    }
+
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existingUser) {
+      return res.status(409).json({ message: 'Email already exists' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = await User.create({ name: name.trim(), email: email.trim(), passwordHash, role: 'admin' });
+    const token = createToken(user);
+
+    return res.status(201).json({ user: buildPublicUser(user), token });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 app.get('/api/settings/tracking-url', authRequired, async (req, res) => {
   try {
     const config = await AppConfig.findOne({ key: 'global' });
