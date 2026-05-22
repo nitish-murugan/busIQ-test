@@ -65,6 +65,7 @@ const busSchema = new mongoose.Schema(
       },
     ],
     conductor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    conductorAssignmentExpiresAt: { type: Date },
     currentLocation: {
       lat: { type: Number, default: 0 },
       lng: { type: Number, default: 0 },
@@ -605,6 +606,13 @@ app.get('/api/buses', authRequired, async (req, res) => {
     const { number, type, conductorId } = req.query;
     const userFacingOnlyVisible = req.auth?.role === 'user';
 
+    // Clear expired conductor assignments
+    const now = new Date();
+    await Bus.updateMany(
+      { conductorAssignmentExpiresAt: { $lt: now } },
+      { $unset: { conductor: 1, conductorAssignmentExpiresAt: 1 } }
+    );
+
     if (number) {
       const busFilter = {
         busNumber: number.trim(),
@@ -845,7 +853,12 @@ app.post('/api/buses/:id/assign-conductor', authRequired, adminOnly, async (req,
     const bus = await Bus.findById(req.params.id);
     if (!bus) return res.status(404).json({ message: 'Bus not found' });
 
+    // Set expiration to end of current day (23:59:59.999)
+    const now = new Date();
+    const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
     bus.conductor = user._id;
+    bus.conductorAssignmentExpiresAt = endOfDay;
     await bus.save();
 
     const populated = await Bus.findById(bus._id).populate('conductor', 'name email role');

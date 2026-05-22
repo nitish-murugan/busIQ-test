@@ -419,6 +419,7 @@ function buildMapEmbedUrl(latitude, longitude) {
 function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null }) {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
   const drawerTranslateX = useRef(new Animated.Value(-320)).current;
 
   useEffect(() => {
@@ -636,9 +637,11 @@ function SectionTitle({ title, description }) {
 function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [locked, setLocked] = useState(false);
+  const [zoom, setZoom] = useState(0);
 
   useEffect(() => {
     setLocked(false);
+    setZoom(0);
   }, [purpose]);
 
   const handleBarcodeScanned = async ({ data }) => {
@@ -646,9 +649,13 @@ function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
       return;
     }
 
+    // Auto-zoom in when QR is detected
+    setZoom(0.3);
+
     const parsed = parseQrData(data);
     if (!parsed) {
       Alert.alert('Invalid QR', 'This QR code is not recognized by the app.');
+      setZoom(0);
       return;
     }
 
@@ -660,8 +667,11 @@ function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
       // If onMatch throws, show error (it may already show alerts)
       console.log('Scanner onMatch error:', e);
     } finally {
-      // Small delay before unlocking to avoid duplicate rapid scans
-      setTimeout(() => setLocked(false), 600);
+      // Delay before unlocking to avoid duplicate rapid scans
+      setTimeout(() => {
+        setLocked(false);
+        setZoom(0);
+      }, 1500);
     }
   };
 
@@ -697,6 +707,7 @@ function ScannerPanel({ purpose, onClose, onMatch, label, description }) {
                 <CameraView
                   style={styles.camera}
                   facing="back"
+                  zoom={zoom}
                   barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                   onBarcodeScanned={handleBarcodeScanned}
                 />
@@ -1203,11 +1214,51 @@ function AuthScreen({ onAuthed }) {
   const [form, setForm] = useState(authInitialState);
   const [loading, setLoading] = useState(false);
   const [selectedLoginChoice, setSelectedLoginChoice] = useState(null);
+  const [selectedRegisterChoice, setSelectedRegisterChoice] = useState(null);
+
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+
+    Animated.timing(slideAnim, {
+      toValue: 0,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  useEffect(() => {
+    fadeAnim.setValue(0);
+    slideAnim.setValue(20);
+
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+
+    Animated.timing(slideAnim, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [mode]);
 
   const submit = async () => {
     try {
       if (mode === 'login' && !selectedLoginChoice) {
         Alert.alert('Select login type', 'Please select either User login or Admin login before continuing.');
+        return;
+      }
+
+      if (mode === 'register' && !selectedRegisterChoice) {
+        Alert.alert('Select role', 'Please select either User or Conductor before continuing.');
         return;
       }
 
@@ -1219,7 +1270,7 @@ function AuthScreen({ onAuthed }) {
 
       if (mode === 'register') {
         payload.name = form.name.trim();
-        payload.role = form.role;
+        payload.role = selectedRegisterChoice;
       }
 
       const data = await requestJson(`/auth/${mode}`, {
@@ -1239,11 +1290,12 @@ function AuthScreen({ onAuthed }) {
     <ScrollView contentContainerStyle={[styles.scrollContent, styles.authScrollContent]}>
       <View style={styles.authScreenLayout}>
         <View style={styles.authScreenTop}>
-          <Card style={styles.authCard}>
-            <View style={styles.modeTabs}>
-              <PillButton label="Login" active={mode === 'login'} onPress={() => setMode('login')} />
-              <PillButton label="Register" active={mode === 'register'} onPress={() => setMode('register')} />
-            </View>
+          <Animated.View style={[styles.authCard, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+            <Card style={styles.authCard}>
+              <View style={styles.modeTabs}>
+                <PillButton label="Login" active={mode === 'login'} onPress={() => setMode('login')} />
+                <PillButton label="Register" active={mode === 'register'} onPress={() => setMode('register')} />
+              </View>
             <Text style={styles.authHeading}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</Text>
             <Text style={styles.authText}>Use the same app for users and admins. Register once, then sign in with your role.</Text>
             {mode === 'register' ? (
@@ -1251,18 +1303,9 @@ function AuthScreen({ onAuthed }) {
             ) : null}
             <Field label="Email" value={form.email} onChangeText={(email) => setForm((current) => ({ ...current, email }))} placeholder="you@company.com" keyboardType="email-address" />
             <Field label="Password" value={form.password} onChangeText={(password) => setForm((current) => ({ ...current, password }))} placeholder="••••••••" secureTextEntry />
-            {mode === 'register' ? (
-              <View style={styles.fieldBlock}>
-                <Text style={styles.fieldLabel}>Role</Text>
-                <View style={styles.modeTabs}>
-                  <PillButton label="User" active={form.role === 'user'} onPress={() => setForm((current) => ({ ...current, role: 'user' }))} />
-                  <PillButton label="Conductor" active={form.role === 'conductor'} onPress={() => setForm((current) => ({ ...current, role: 'conductor' }))} />
-                  <PillButton label="Admin" active={form.role === 'admin'} onPress={() => setForm((current) => ({ ...current, role: 'admin' }))} />
-                </View>
-              </View>
-            ) : null}
             <PrimaryButton label={mode === 'login' ? 'Login' : 'Register'} onPress={submit} loading={loading} />
           </Card>
+          </Animated.View>
 
         </View>
 
@@ -1275,7 +1318,16 @@ function AuthScreen({ onAuthed }) {
               <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'admin' && styles.loginChoiceButtonTextActive]}>Admin login</Text>
             </Pressable>
           </View>
-        ) : null}
+        ) : (
+          <View style={styles.loginChoiceDock}>
+            <Pressable onPress={() => setSelectedRegisterChoice('user')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'user' && styles.loginChoiceButtonActive]}>
+              <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'user' && styles.loginChoiceButtonTextActive]}>User</Text>
+            </Pressable>
+            <Pressable onPress={() => setSelectedRegisterChoice('conductor')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonActive]}>
+              <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonTextActive]}>Conductor</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
 
     </ScrollView>
@@ -1295,10 +1347,12 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
   const [tickets, setTickets] = useState([]);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
   const [showOnlyCurrentBooked, setShowOnlyCurrentBooked] = useState(false);
+  const [qrZoomOpen, setQrZoomOpen] = useState(false);
+  const [zoomedQrData, setZoomedQrData] = useState(null);
 
   const displayedTickets = useMemo(() => {
     if (showOnlyCurrentBooked && selectedTicketId) {
-      return tickets.filter((t) => t._id === selectedTicketId);
+      return tickets.filter((t) => t._id === selectedTicketId || t.id === selectedTicketId);
     }
     return tickets;
   }, [tickets, showOnlyCurrentBooked, selectedTicketId]);
@@ -1589,7 +1643,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
       startStop,
       endStop,
     }));
-    setActiveTab('ticket');
+    setActiveTab('search');
     setShowOnlyCurrentBooked(false);
   };
 
@@ -1895,7 +1949,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
         onBusQrScanned={handleBusScan}
         menuActions={[
           { label: 'Search bus', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('search'); } },
-          { label: 'Ticket', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('ticket'); } },
+          { label: 'Ticket', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('ticket'); setSelectedBus(null); } },
           { label: 'Sync tickets', onPress: () => { setShowOnlyCurrentBooked(false); manualSyncTickets(); } },
         ]}
       />
@@ -2169,7 +2223,12 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                     <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Validity</Text><Text style={styles.ticketMetaValueSmall}>{ticketValidity}</Text></View>
                   </View>
                   <PrimaryButton label="Refresh status" onPress={refreshSelectedTicket} loading={refreshingTicket} />
-                  {selectedTicket.qrDataUrl ? <Image source={{ uri: selectedTicket.qrDataUrl }} style={styles.ticketQrImage} /> : null}
+                  {selectedTicket.qrDataUrl ? (
+                    <Pressable onPress={() => { setZoomedQrData(selectedTicket.qrDataUrl); setQrZoomOpen(true); }}>
+                      <Image source={{ uri: selectedTicket.qrDataUrl }} style={styles.ticketQrImage} />
+                      <Text style={styles.helperText}>Tap to zoom</Text>
+                    </Pressable>
+                  ) : null}
                   <Text style={styles.helperText}>Route: {selectedTicket.startStop} to {selectedTicket.endStop} • Seats: {selectedTicket.seats}</Text>
                 </>
               ) : null}
@@ -2194,6 +2253,17 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
       ) : null}
 
       {trackingTicket ? <LiveTrackingPanel ticket={trackingTicket} onClose={() => setTrackingTicket(null)} trackingUrl={trackingUrl} /> : null}
+
+      {qrZoomOpen ? (
+        <Modal visible animationType="fade" transparent onRequestClose={() => setQrZoomOpen(false)}>
+          <Pressable style={styles.zoomBackdrop} onPress={() => setQrZoomOpen(false)}>
+            <View style={styles.zoomContent}>
+              <Image source={{ uri: zoomedQrData }} style={{ width: 300, height: 300 }} />
+              <Text style={styles.helperText}>Tap outside to close</Text>
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
     </ScrollView>
   );
 }
@@ -2314,6 +2384,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [trackingInput, setTrackingInput] = useState(trackingUrl || '');
   const [trackingSaving, setTrackingSaving] = useState(false);
   const [trackingMessage, setTrackingMessage] = useState('');
+  const [trackingModalOpen, setTrackingModalOpen] = useState(false);
 
   useEffect(() => {
     setTrackingInput(trackingUrl || '');
@@ -2509,12 +2580,16 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
-      <AppHeader session={session} onLogout={onLogout} />
-      <View style={styles.tabRow}>
-        <PillButton label="Add bus" active={activeTab === 'add'} onPress={() => setActiveTab('add')} />
-        <PillButton label="Verify ticket" active={activeTab === 'verify'} onPress={() => setActiveTab('verify')} />
-        <PillButton label="Scan bus" active={scannerOpen && scannerPurpose === 'bus'} onPress={() => { setScannerPurpose('bus'); setScannerOpen(true); }} />
-      </View>
+      <AppHeader
+        session={session}
+        onLogout={onLogout}
+        menuActions={[
+          { label: 'Add bus', onPress: () => setActiveTab('add') },
+          { label: 'Verify ticket', onPress: () => setActiveTab('verify') },
+          { label: 'Scan bus', onPress: () => { setScannerPurpose('bus'); setScannerOpen(true); } },
+          { label: 'Set live tracking', onPress: () => setTrackingModalOpen(true) },
+        ]}
+      />
 
       {activeTab === 'add' ? (
         <Card>
@@ -2683,21 +2758,36 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
         </View>
       </Card>
 
-      <Card>
-        <SectionTitle title="Live tracking source" description="Set the public URL that serves the live bus position JSON, for example https://your-server.com/data." />
-        <Field
-          label="Public tracking URL"
-          value={trackingInput}
-          onChangeText={setTrackingInput}
-          placeholder="https://your-server.com/data"
-          autoCapitalize="none"
-          keyboardType="url"
-        />
-        <View style={styles.rowButtons}>
-          <PrimaryButton label="Save tracking URL" onPress={saveTrackingUrl} loading={trackingSaving} style={styles.flexButton} />
-        </View>
-        {trackingMessage ? <Text style={styles.helperText}>{trackingMessage}</Text> : null}
-      </Card>
+      <Modal visible={trackingModalOpen} animationType="slide" onRequestClose={() => setTrackingModalOpen(false)}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={{ padding: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Pressable onPress={() => setTrackingModalOpen(false)} style={styles.secondaryAction}>
+                <Text style={styles.secondaryActionText}>Back</Text>
+              </Pressable>
+              <SectionTitle
+                title="Live tracking source"
+                description="Set the public URL that serves the live bus position JSON, for example https://your-server.com/data."
+              />
+              <View style={{ width: 60 }} />
+            </View>
+            <Card>
+              <Field
+                label="Public tracking URL"
+                value={trackingInput}
+                onChangeText={setTrackingInput}
+                placeholder="https://your-server.com/data"
+                autoCapitalize="none"
+                keyboardType="url"
+              />
+              <View style={styles.rowButtons}>
+                <PrimaryButton label="Save tracking URL" onPress={saveTrackingUrl} loading={trackingSaving} style={styles.flexButton} />
+              </View>
+              {trackingMessage ? <Text style={styles.helperText}>{trackingMessage}</Text> : null}
+            </Card>
+          </View>
+        </ScrollView>
+      </Modal>
 
       <Modal visible={assignModalOpen} transparent animationType="fade" onRequestClose={closeAssignModal}>
         <View style={styles.centeredBackdrop}>
@@ -2735,6 +2825,8 @@ function ConductorDashboard({ session, onLogout }) {
   const [busVisibilityLoading, setBusVisibilityLoading] = useState({});
   const [scannerOpen, setScannerOpen] = useState(false);
   const [verificationFlash, setVerificationFlash] = useState(null);
+  const [qrZoomOpen, setQrZoomOpen] = useState(false);
+  const [zoomedQrData, setZoomedQrData] = useState(null);
 
   const refreshBuses = async () => {
     try {
@@ -2914,11 +3006,33 @@ function ConductorDashboard({ session, onLogout }) {
             })()}
 
             <View style={{ marginTop: 12, alignItems: 'center' }}>
+              <Pressable onPress={() => { setZoomedQrData(`bus:${bus._id}`); setQrZoomOpen(true); }}>
+                <View style={styles.localQrWrap}>
+                  <SvgQRCode value={`bus:${bus._id}`} size={150} />
+                </View>
+                <Text style={styles.helperText}>Tap to zoom</Text>
+              </Pressable>
+            </View>
+
+            <View style={{ marginTop: 12, alignItems: 'center' }}>
               <PrimaryButton label="Open ticket scanner" onPress={() => { setScannerOpen(true); }} style={styles.centerScannerButton} />
             </View>
           </View>
         )) : <Text style={styles.helperText}>No buses assigned to you.</Text>}
       </Card>
+
+      {qrZoomOpen ? (
+        <Modal visible animationType="fade" transparent onRequestClose={() => setQrZoomOpen(false)}>
+          <Pressable style={styles.zoomBackdrop} onPress={() => setQrZoomOpen(false)}>
+            <View style={styles.zoomContent}>
+              <View style={styles.localQrWrap}>
+                <SvgQRCode value={zoomedQrData} size={300} />
+              </View>
+              <Text style={styles.helperText}>Tap outside to close</Text>
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
 
       {scannerOpen ? (
         <ScannerPanel
@@ -3992,6 +4106,18 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 18,
     backgroundColor: '#FFFFFF',
+  },
+  zoomBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  zoomContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    alignItems: 'center',
   },
   offlineCompactContent: {
     paddingBottom: 24,
