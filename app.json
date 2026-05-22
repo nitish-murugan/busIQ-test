@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "busBooking1",
+    "name": "BusIQ",
     "slug": "busBooking1",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/appLogo.png",
     "userInterfaceStyle": "light",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -17,10 +17,15 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
+        "foregroundImage": "./assets/appLogo.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.nitishm.busBooking1"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -34,6 +39,11 @@
         }
       ],
       "@react-native-community/datetimepicker"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "eacd638c-38bb-469a-bb3d-b555813a4d18"
+      }
+    }
   }
 }

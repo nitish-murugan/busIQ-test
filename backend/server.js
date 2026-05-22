@@ -41,7 +41,7 @@ const userSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
-    role: { type: String, enum: ['user', 'admin'], required: true },
+    role: { type: String, enum: ['user', 'admin', 'conductor'], required: true },
   },
   { timestamps: true }
 );
@@ -50,9 +50,10 @@ const busSchema = new mongoose.Schema(
   {
     busNumber: { type: String, required: true, unique: true, trim: true },
     seats: { type: Number, required: true },
-    startTime: { type: String, required: true },
-    endTime: { type: String, required: true },
+    startTime: { type: String },
+    endTime: { type: String },
     daily: { type: Boolean, default: true },
+    isVisible: { type: Boolean, default: true },
     busType: { type: String, enum: ['Local', 'TNSTC', 'Others'], default: 'Local' },
     from: { type: String, required: true, trim: true },
     to: { type: String, required: true, trim: true },
@@ -63,6 +64,12 @@ const busSchema = new mongoose.Schema(
         lng: { type: Number, default: 0 },
       },
     ],
+    conductor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    currentLocation: {
+      lat: { type: Number, default: 0 },
+      lng: { type: Number, default: 0 },
+      updatedAt: { type: Date },
+    },
     timings: [
       {
         label: { type: String, required: true },
@@ -98,9 +105,18 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const appConfigSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, unique: true, default: 'global' },
+    trackingUrl: { type: String, default: '' },
+  },
+  { timestamps: true }
+);
+
 const User = mongoose.model('User', userSchema);
 const Bus = mongoose.model('Bus', busSchema);
 const Booking = mongoose.model('Booking', bookingSchema);
+const AppConfig = mongoose.model('AppConfig', appConfigSchema);
 
 async function ensureDefaultAdmin() {
   const normalizedEmail = defaultAdminEmail.trim().toLowerCase();
@@ -162,12 +178,69 @@ function adminOnly(req, res, next) {
   return next();
 }
 
+function conductorOrAdmin(req, res, next) {
+  if (!['admin', 'conductor'].includes(req.auth?.role)) {
+    return res.status(403).json({ message: 'Conductor or admin access required' });
+  }
+
+  return next();
+}
+
 function createOtp() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
 function createQrToken(prefix, id) {
   return `${prefix}:${id}`;
+}
+
+const IST_OFFSET_MINUTES = 330;
+
+function parseDateTimeInIST(dateValue, timeValue) {
+  const base = String(timeValue || '').trim();
+  const match = base.match(/^(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?$/);
+
+  if (!match) {
+    const fallback = new Date(`${dateValue} ${base}`);
+    if (!Number.isNaN(fallback.getTime())) {
+      return fallback;
+    }
+
+    return null;
+  }
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const period = match[3] ? match[3].toUpperCase() : null;
+
+  if (period === 'AM' && hours === 12) {
+    hours = 0;
+  }
+
+  if (period === 'PM' && hours !== 12) {
+    hours += 12;
+  }
+
+  const [year, month, day] = String(dateValue).split('-').map(Number);
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  const utcMillis = Date.UTC(year, month - 1, day, hours, minutes, 0, 0) - (IST_OFFSET_MINUTES * 60 * 1000);
+  return new Date(utcMillis);
+}
+
+function normalizeRemoteUrl(value) {
+  if (!value || typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return '';
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
 function normalizeRouteLabel(value) {
@@ -209,6 +282,74 @@ function buildBusRouteSequence(bus) {
   append(bus.to);
 
   return sequence;
+}
+
+function getCrowdPresentation(availabilityPercent) {
+  if (availabilityPercent >= 100) {
+    return { label: 'no crowded', color: '#22C55E' };
+  }
+
+  if (availabilityPercent >= 50) {
+    return { label: 'less crowded', color: '#EAB308' };
+  }
+
+  return { label: 'most crowded', color: '#EF4444' };
+}
+
+async function attachCrowdSummary(buses) {
+  const busList = Array.isArray(buses) ? buses : [];
+  const busIds = busList.map((bus) => bus._id).filter(Boolean);
+
+  if (!busIds.length) {
+    return busList.map((bus) => ({
+      ...bus.toObject(),
+      bookedSeats: 0,
+      availableSeats: Number(bus.seats || 0),
+      availabilityPercent: 100,
+      crowdStatus: 'no crowded',
+      crowdColor: '#22C55E',
+    }));
+  }
+
+  const bookedSeatTotals = await Booking.aggregate([
+    {
+      $match: {
+        bus: { $in: busIds },
+        status: { $in: ['pending', 'verified'] },
+      },
+    },
+    {
+      $group: {
+        _id: '$bus',
+        bookedSeats: { $sum: '$seats' },
+      },
+    },
+  ]);
+
+  const bookedSeatMap = new Map(bookedSeatTotals.map((row) => [String(row._id), Number(row.bookedSeats || 0)]));
+
+  return busList.map((bus) => {
+    const busObject = typeof bus.toObject === 'function' ? bus.toObject() : { ...bus };
+    const totalSeats = Number(busObject.seats || 0);
+    const bookedSeats = bookedSeatMap.get(String(busObject._id)) || 0;
+    const availableSeats = Math.max(totalSeats - bookedSeats, 0);
+    const availabilityPercent = totalSeats > 0 ? Math.max(0, Math.min(100, Math.round((availableSeats / totalSeats) * 100))) : 0;
+    const crowd = getCrowdPresentation(availabilityPercent);
+
+    return {
+      ...busObject,
+      bookedSeats,
+      availableSeats,
+      availabilityPercent,
+      crowdStatus: crowd.label,
+      crowdColor: crowd.color,
+    };
+  });
+}
+
+function findRouteStopIndex(routeSequence, selectedStop) {
+  const normalizedSelectedStop = normalizeRouteLabel(selectedStop);
+  return routeSequence.findIndex((routeStop) => routeStop.normalized === normalizedSelectedStop);
 }
 
 function buildRouteGraph(buses) {
@@ -365,32 +506,11 @@ async function buildBusQrDataUrl(busDoc) {
 }
 
 function parseTime(dateValue, timeValue) {
-  if (!timeValue) return new Date(dateValue);
+  const parsed = parseDateTimeInIST(dateValue, timeValue);
 
-  const str = String(timeValue).trim();
-  // Match formats like '8:00', '08:00', '8:00 AM', '08:00PM', case-insensitive
-  const m = str.match(/^(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?$/);
-  if (m) {
-    let hours = Number(m[1]);
-    const minutes = Number(m[2]);
-    const period = m[3] ? m[3].toUpperCase() : null;
-
-    if (period) {
-      if (period === 'AM') {
-        if (hours === 12) hours = 0;
-      } else if (period === 'PM') {
-        if (hours !== 12) hours += 12;
-      }
-    }
-
-    const date = new Date(dateValue);
-    date.setHours(hours, minutes, 0, 0);
-    return date;
+  if (parsed) {
+    return parsed;
   }
-
-  // Fallback: try constructing from combined date+time string
-  const fallback = new Date(`${dateValue} ${str}`);
-  if (!isNaN(fallback.getTime())) return fallback;
 
   throw new Error(`Invalid time format: ${timeValue}`);
 }
@@ -407,8 +527,8 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ message: 'Name, email, password, and role are required' });
     }
 
-    if (!['user', 'admin'].includes(role)) {
-      return res.status(400).json({ message: 'Role must be user or admin' });
+    if (!['user', 'admin', 'conductor'].includes(role)) {
+      return res.status(400).json({ message: 'Role must be user, admin or conductor' });
     }
 
     const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
@@ -451,20 +571,55 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.get('/api/settings/tracking-url', authRequired, async (req, res) => {
+  try {
+    const config = await AppConfig.findOne({ key: 'global' });
+    return res.json({ trackingUrl: config?.trackingUrl || '' });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.put('/api/settings/tracking-url', authRequired, adminOnly, async (req, res) => {
+  try {
+    const trackingUrl = normalizeRemoteUrl(req.body?.trackingUrl);
+
+    if (!trackingUrl) {
+      return res.status(400).json({ message: 'trackingUrl is required' });
+    }
+
+    const config = await AppConfig.findOneAndUpdate(
+      { key: 'global' },
+      { key: 'global', trackingUrl },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return res.json({ trackingUrl: config.trackingUrl });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 app.get('/api/buses', authRequired, async (req, res) => {
   try {
-    const { number, type } = req.query;
+    const { number, type, conductorId } = req.query;
+    const userFacingOnlyVisible = req.auth?.role === 'user';
 
     if (number) {
-      const bus = await Bus.findOne({ busNumber: number.trim() }).populate('createdBy', 'name email role');
+      const busFilter = {
+        busNumber: number.trim(),
+        ...(userFacingOnlyVisible ? { $or: [{ isVisible: true }, { isVisible: { $exists: false } }] } : {}),
+      };
+      const bus = await Bus.findOne(busFilter).populate('createdBy', 'name email role').populate('conductor', 'name email role');
       if (!bus) {
         return res.json({ bus: null });
       }
 
       const qrDataUrl = await buildBusQrDataUrl(bus);
+      const [busWithCrowd] = await attachCrowdSummary([bus]);
       return res.json({
         bus: {
-          ...bus.toObject(),
+          ...busWithCrowd,
           qrDataUrl,
         },
       });
@@ -474,10 +629,17 @@ app.get('/api/buses', authRequired, async (req, res) => {
     if (type) {
       filter.busType = type;
     }
-    const buses = await Bus.find(filter).sort({ createdAt: -1 });
+    if (conductorId) {
+      filter.conductor = conductorId;
+    }
+    if (userFacingOnlyVisible) {
+      filter.$or = [{ isVisible: true }, { isVisible: { $exists: false } }];
+    }
+    const buses = await Bus.find(filter).sort({ createdAt: -1 }).populate('createdBy', 'name email role').populate('conductor', 'name email role');
+    const busesWithCrowd = await attachCrowdSummary(buses);
     const busesWithQr = await Promise.all(
-      buses.map(async (bus) => ({
-        ...bus.toObject(),
+      busesWithCrowd.map(async (bus) => ({
+        ...bus,
         qrDataUrl: await buildBusQrDataUrl(bus),
       }))
     );
@@ -495,12 +657,38 @@ app.get('/api/buses/:id', authRequired, async (req, res) => {
       return res.status(404).json({ message: 'Bus not found' });
     }
 
+    if (req.auth?.role === 'user' && bus.isVisible === false) {
+      return res.status(404).json({ message: 'Bus not found' });
+    }
+
     const qrDataUrl = await buildBusQrDataUrl(bus);
+    const [busWithCrowd] = await attachCrowdSummary([bus]);
     return res.json({
       bus: {
-        ...bus.toObject(),
+        ...busWithCrowd,
         qrDataUrl,
       },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.get('/api/routes/inventory', authRequired, async (req, res) => {
+  try {
+    const buses = await Bus.find({})
+      .select('busNumber from to stops isVisible')
+      .sort({ from: 1, to: 1, busNumber: 1 });
+
+    return res.json({
+      buses: buses.map((bus) => ({
+        _id: bus._id,
+        busNumber: bus.busNumber,
+        from: bus.from,
+        to: bus.to,
+        stops: Array.isArray(bus.stops) ? bus.stops : [],
+        isVisible: bus.isVisible,
+      })),
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -510,7 +698,10 @@ app.get('/api/buses/:id', authRequired, async (req, res) => {
 app.post('/api/routes/plan', authRequired, async (req, res) => {
   try {
     const { from, to, fromCity, toCity } = req.body || {};
-    const plan = findRoutePlan(await Bus.find({}), from || fromCity, to || toCity);
+    const visibleFilter = req.auth?.role === 'user'
+      ? { $or: [{ isVisible: true }, { isVisible: { $exists: false } }] }
+      : {};
+    const plan = findRoutePlan(await Bus.find(visibleFilter), from || fromCity, to || toCity);
 
     if (plan.error) {
       return res.status(400).json({ message: plan.error });
@@ -524,8 +715,8 @@ app.post('/api/routes/plan', authRequired, async (req, res) => {
 
 app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
   try {
-  const { busNumber, seats, startTime, endTime, startPeriod, endPeriod, daily, from, to, stops, busType } = req.body || {};
-    
+  const { busNumber, seats, daily, from, to, stops, busType, conductorId } = req.body || {};
+
     // Process stops: handle both old string format and new object format with coordinates
     const cleanStops = Array.isArray(stops) ? stops.map((stop) => {
       if (typeof stop === 'string') {
@@ -546,8 +737,8 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
       return null;
     }).filter((stop) => stop && stop.name) : [];
 
-    if (!busNumber || !seats || !startTime || !endTime || !from || !to) {
-      return res.status(400).json({ message: 'Bus number, seats, timings, from, and to are required' });
+    if (!busNumber || !seats || !from || !to) {
+      return res.status(400).json({ message: 'Bus number, seats, from, and to are required' });
     }
 
     if (cleanStops.length < 2) {
@@ -559,29 +750,16 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
       return res.status(409).json({ message: 'Bus number already exists' });
     }
 
-    // If frontend provides AM/PM dropdowns (`startPeriod`/`endPeriod`), include them in stored labels.
-    const sp = startPeriod ? String(startPeriod).trim().toUpperCase() : '';
-    const ep = endPeriod ? String(endPeriod).trim().toUpperCase() : '';
-    const startLabel = sp ? `${startTime} ${sp}` : String(startTime);
-    const endLabel = ep ? `${endTime} ${ep}` : String(endTime);
-
     const bus = await Bus.create({
       busNumber: busNumber.trim(),
       seats: Number(seats),
-      startTime: startLabel,
-      endTime: endLabel,
       daily: Boolean(daily),
       busType: busType || 'Local',
       from: from.trim(),
       to: to.trim(),
       stops: cleanStops,
-      timings: [
-        {
-          label: `${startLabel} - ${endLabel}`,
-          startTime: startLabel,
-          endTime: endLabel,
-        },
-      ],
+      conductor: conductorId || undefined,
+      timings: [],
       createdBy: req.auth.id,
       qrToken: createQrToken('bus', new mongoose.Types.ObjectId().toString()),
     });
@@ -597,6 +775,182 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
         qrDataUrl,
       },
     });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// List users (admin only) - optional filter by role
+app.get('/api/users', authRequired, adminOnly, async (req, res) => {
+  try {
+    const { role } = req.query;
+    const filter = {};
+    if (role) filter.role = role;
+    const users = await User.find(filter).select('name email role').sort({ name: 1 });
+    return res.json({ users });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Conductor (or admin) can post current location for a bus
+app.post('/api/buses/:id/location', authRequired, async (req, res) => {
+  try {
+    const { lat, lng } = req.body || {};
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({ message: 'lat and lng (numbers) are required' });
+    }
+
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) return res.status(404).json({ message: 'Bus not found' });
+
+    // Only the assigned conductor or an admin may update location
+    if (req.auth.role !== 'admin' && String(bus.conductor || '') !== String(req.auth.id)) {
+      return res.status(403).json({ message: 'Only assigned conductor or admin may update location' });
+    }
+
+    bus.currentLocation = { lat, lng, updatedAt: new Date() };
+    await bus.save();
+
+    return res.json({ message: 'Location updated', bus: bus.toObject() });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Admin can assign or change conductor for a bus
+app.post('/api/buses/:id/assign-conductor', authRequired, adminOnly, async (req, res) => {
+  try {
+    const { conductorId } = req.body || {};
+    if (!conductorId) return res.status(400).json({ message: 'conductorId is required' });
+
+    const user = await User.findById(conductorId);
+    if (!user) return res.status(404).json({ message: 'Conductor not found' });
+    if (user.role !== 'conductor') return res.status(400).json({ message: 'User is not a conductor' });
+
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) return res.status(404).json({ message: 'Bus not found' });
+
+    bus.conductor = user._id;
+    await bus.save();
+
+    const populated = await Bus.findById(bus._id).populate('conductor', 'name email role');
+    return res.json({ message: 'Conductor assigned', bus: populated.toObject() });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Update a specific stop's location for a bus (conductor or admin)
+app.post('/api/buses/:id/stops/:index/location', authRequired, async (req, res) => {
+  try {
+    const { lat, lng } = req.body || {};
+    const idx = Number(req.params.index);
+    if (Number.isNaN(idx) || idx < 0) return res.status(400).json({ message: 'Invalid stop index' });
+    if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ message: 'lat and lng (numbers) are required' });
+
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) return res.status(404).json({ message: 'Bus not found' });
+
+    // Only assigned conductor or admin may update stop locations
+    if (req.auth.role !== 'admin' && String(bus.conductor || '') !== String(req.auth.id)) {
+      return res.status(403).json({ message: 'Only assigned conductor or admin may update stop locations' });
+    }
+
+    if (!Array.isArray(bus.stops) || idx >= bus.stops.length) return res.status(400).json({ message: 'Stop index out of range' });
+
+    bus.stops[idx].lat = lat;
+    bus.stops[idx].lng = lng;
+    await bus.save();
+
+    return res.json({ message: 'Stop location updated', bus: bus.toObject() });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Conductor or admin can toggle whether a bus is visible to users
+app.post('/api/buses/:id/visibility', authRequired, conductorOrAdmin, async (req, res) => {
+  try {
+    const { isVisible } = req.body || {};
+    if (typeof isVisible !== 'boolean') {
+      return res.status(400).json({ message: 'isVisible must be a boolean' });
+    }
+
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) {
+      return res.status(404).json({ message: 'Bus not found' });
+    }
+
+    if (req.auth.role === 'conductor' && String(bus.conductor || '') !== String(req.auth.id)) {
+      return res.status(403).json({ message: 'Only assigned conductor may toggle bus visibility' });
+    }
+
+    bus.isVisible = isVisible;
+    await bus.save();
+
+    return res.json({ message: 'Bus visibility updated', bus: bus.toObject() });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Conductor (or admin) can add a timing to a bus
+app.post('/api/buses/:id/timings', authRequired, conductorOrAdmin, async (req, res) => {
+  try {
+    const { startTime, endTime } = req.body || {};
+    if (!startTime || typeof startTime !== 'string') {
+      return res.status(400).json({ message: 'startTime is required (e.g., "09:00 AM")' });
+    }
+    if (!endTime || typeof endTime !== 'string') {
+      return res.status(400).json({ message: 'endTime is required (e.g., "10:30 AM")' });
+    }
+
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) {
+      return res.status(404).json({ message: 'Bus not found' });
+    }
+
+    // Verify conductor is assigned to this bus
+    if (req.auth.role === 'conductor' && String(bus.conductor || '') !== String(req.auth.id)) {
+      return res.status(403).json({ message: 'Only assigned conductor may add timings' });
+    }
+
+    // Validate time format
+    const startMatch = startTime.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    const endMatch = endTime.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+    if (!startMatch) {
+      return res.status(400).json({ message: 'Invalid startTime format. Expected "HH:MM AM" or "HH:MM PM"' });
+    }
+    if (!endMatch) {
+      return res.status(400).json({ message: 'Invalid endTime format. Expected "HH:MM AM" or "HH:MM PM"' });
+    }
+
+    // Create label
+    const label = `${startTime} - ${endTime}`;
+
+    // Check if timing already exists
+    const existingTiming = bus.timings.find((t) => t.label === label);
+    if (existingTiming) {
+      return res.status(409).json({ message: 'Timing already exists' });
+    }
+
+    // Add the new timing
+    bus.timings.push({
+      label,
+      startTime,
+      endTime,
+    });
+
+    // Update top-level startTime and endTime with the first timing if not set
+    if (!bus.startTime && bus.timings.length > 0) {
+      bus.startTime = bus.timings[0].startTime;
+      bus.endTime = bus.timings[0].endTime;
+    }
+
+    await bus.save();
+
+    return res.json({ message: 'Timing added successfully', bus: bus.toObject() });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
@@ -620,8 +974,9 @@ app.post('/api/bookings', authRequired, async (req, res) => {
       return res.status(400).json({ message: 'Selected timing is not available for this bus' });
     }
 
-    const startIndex = bus.stops.indexOf(startStop);
-    const endIndex = bus.stops.indexOf(endStop);
+    const routeSequence = buildBusRouteSequence(bus);
+    const startIndex = findRouteStopIndex(routeSequence, startStop);
+    const endIndex = findRouteStopIndex(routeSequence, endStop);
 
     if (startIndex === -1 || endIndex === -1 || startIndex >= endIndex) {
       return res.status(400).json({ message: 'Choose a valid start and end stop in route order' });
@@ -632,7 +987,13 @@ app.post('/api/bookings', authRequired, async (req, res) => {
       return res.status(400).json({ message: `Seats must be between 1 and ${bus.seats}` });
     }
 
-    const [startTime, endTime] = timingLabel.split(' - ');
+    // Robust parsing of timingLabel to extract start and end times (handles "-", "to", with or without spaces)
+    const timingMatch = timingLabel.match(/^(.+?)\s*(?:-|to)\s*(.+)$/i);
+    if (!timingMatch) {
+      return res.status(400).json({ message: 'Invalid timing format. Expected "start - end" or "start to end"' });
+    }
+    const startTime = timingMatch[1].trim();
+    const endTime = timingMatch[2].trim();
     const validFrom = parseTime(travelDate, startTime);
     const validTo = parseTime(travelDate, endTime);
     const otp = createOtp();
@@ -661,8 +1022,10 @@ app.post('/api/bookings', authRequired, async (req, res) => {
 
     const bookingObj = populatedBooking.toObject();
     const now = new Date();
-    // Only expose OTP during the valid window
-    if (!bookingObj.validFrom || !bookingObj.validTo || now < bookingObj.validFrom || now > bookingObj.validTo) {
+    // Add 5 minute buffer to account for clock skew between client and server
+    const bufferMs = 5 * 60 * 1000;
+    // Only expose OTP during the valid window (inclusive) - compare UTC timestamps with buffer
+    if (!bookingObj.validFrom || !bookingObj.validTo || now < new Date(bookingObj.validFrom.getTime() - bufferMs) || now > new Date(bookingObj.validTo.getTime() + bufferMs)) {
       delete bookingObj.otp;
     }
 
@@ -684,11 +1047,13 @@ app.get('/api/bookings/me', authRequired, async (req, res) => {
       .sort({ createdAt: -1 });
 
     const now = new Date();
+    // Add 5 minute buffer to account for clock skew between client and server
+    const bufferMs = 5 * 60 * 1000;
     const bookingsWithQr = await Promise.all(
       bookings.map(async (booking) => {
         const obj = booking.toObject();
-        // Only expose OTP during the valid window
-        if (!obj.validFrom || !obj.validTo || now < obj.validFrom || now > obj.validTo) {
+        // Only expose OTP during the valid window with buffer for clock skew
+        if (!obj.validFrom || !obj.validTo || now < new Date(obj.validFrom.getTime() - bufferMs) || now > new Date(obj.validTo.getTime() + bufferMs)) {
           delete obj.otp;
         }
 
@@ -705,7 +1070,7 @@ app.get('/api/bookings/me', authRequired, async (req, res) => {
   }
 });
 
-app.post('/api/bookings/verify', authRequired, adminOnly, async (req, res) => {
+app.post('/api/bookings/verify', authRequired, conductorOrAdmin, async (req, res) => {
   try {
     const { bookingId: bodyId, qrToken: bodyToken, otp: bodyOtp } = req.body || {};
     const { bookingId: queryId, qrToken: queryToken, otp: queryOtp } = req.query || {};
@@ -843,7 +1208,9 @@ app.post('/api/bookings/verify', authRequired, adminOnly, async (req, res) => {
     }
 
     const now = new Date();
-    if (now < booking.validFrom || now > booking.validTo) {
+    // Add 5 minute buffer to account for clock skew between client and server
+    const bufferMs = 5 * 60 * 1000;
+    if (now < new Date(booking.validFrom.getTime() - bufferMs) || now > new Date(booking.validTo.getTime() + bufferMs)) {
       return res.status(400).json({ message: 'Ticket is outside the valid travel window' });
     }
 
@@ -855,6 +1222,94 @@ app.post('/api/bookings/verify', authRequired, adminOnly, async (req, res) => {
     return res.json({
       booking: {
         ...booking.toObject(),
+        qrDataUrl,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Sync offline booking - allows users to sync offline tickets when going online
+app.post('/api/bookings/sync-offline', authRequired, async (req, res) => {
+  try {
+    const ticket = req.body || {};
+    const userId = req.auth.id;
+
+    // Validate required fields from offline ticket
+    const ticketId = String(ticket.id || '').trim();
+    const busId = String(ticket.busId || '').trim();
+    const otp = String(ticket.otp || '').trim();
+
+    if (!ticketId || !busId || !otp) {
+      return res.status(400).json({ message: 'Offline ticket is missing required fields (id, busId, otp)' });
+    }
+
+    // Check if already synced (by offlineRef)
+    const existing = await Booking.findOne({ offlineRef: ticketId }).populate('bus').populate('user', 'name email role');
+    if (existing) {
+      const qrDataUrl = await QRCode.toDataURL(existing.qrToken);
+      return res.json({
+        message: 'Offline ticket already synced',
+        booking: {
+          ...existing.toObject(),
+          qrDataUrl,
+        },
+      });
+    }
+
+    // Get bus details
+    const bus = await Bus.findById(busId);
+    if (!bus) {
+      return res.status(400).json({ message: 'Bus not found in database' });
+    }
+
+    // Validate ticket validity window
+    const validFrom = new Date(ticket.validFrom);
+    const validTo = new Date(ticket.validTo);
+    if (isNaN(validFrom.getTime()) || isNaN(validTo.getTime())) {
+      return res.status(400).json({ message: 'Offline ticket has invalid validity window' });
+    }
+
+    const now = new Date();
+    if (now > validTo) {
+      return res.status(400).json({ message: 'Offline ticket has expired' });
+    }
+
+    // Validate seats
+    const seats = Number(ticket.seats || 1);
+    if (!Number.isInteger(seats) || seats < 1) {
+      return res.status(400).json({ message: 'Invalid seats value' });
+    }
+
+    // Create booking for this user
+    const qrToken = createQrToken('ticket', ticketId);
+    const booking = await Booking.create({
+      bus: bus._id,
+      user: userId,
+      travelDate: String(ticket.travelDate || '').trim() || validFrom.toISOString().slice(0, 10),
+      timingLabel: String(ticket.timingLabel || '').trim() || `${bus.startTime} - ${bus.endTime}`,
+      startStop: String(ticket.startStop || '').trim() || (bus.stops?.[0]?.name || bus.stops?.[0] || 'Unknown'),
+      endStop: String(ticket.endStop || '').trim() || (bus.stops?.[bus.stops.length - 1]?.name || bus.stops?.[bus.stops.length - 1] || 'Unknown'),
+      seats,
+      otp,
+      qrToken,
+      status: now >= validFrom ? 'verified' : 'pending',
+      validFrom,
+      validTo,
+      verifiedAt: now >= validFrom ? now : null,
+      offlineMode: true,
+      offlineRef: ticketId,
+      offlinePayload: ticket,
+    });
+
+    const populated = await Booking.findById(booking._id).populate('bus').populate('user', 'name email role');
+    const qrDataUrl = await QRCode.toDataURL(qrToken);
+
+    return res.status(201).json({
+      message: 'Offline ticket synced successfully',
+      booking: {
+        ...populated.toObject(),
         qrDataUrl,
       },
     });
