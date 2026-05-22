@@ -529,7 +529,7 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
                 </Pressable>
               ) 
               : null}
-              <Pressable style={styles.ghostButton} onPress={onLogout}>
+              <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.ghostButtonPressed]} onPress={onLogout}>
                 <Text style={styles.ghostButtonText}>Logout</Text>
               </Pressable>
             </>
@@ -557,10 +557,10 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
                       <Text style={styles.drawerItemText}>{action.label}</Text>
                     </Pressable>
                   ))}
-                  <Pressable style={styles.drawerItem} onPress={() => { setMenuOpen(false); setScannerOpen(true); }}>
+                  <Pressable style={({ pressed }) => [styles.drawerItem, pressed && styles.drawerItemPressed]} onPress={() => { setMenuOpen(false); setScannerOpen(true); }}>
                     <Text style={styles.drawerItemText}>Scan QR</Text>
                   </Pressable>
-                  <Pressable style={styles.drawerItem} onPress={() => { setMenuOpen(false); onLogout(); }}>
+                  <Pressable style={({ pressed }) => [styles.drawerItem, pressed && styles.drawerItemPressed]} onPress={() => { setMenuOpen(false); onLogout(); }}>
                     <Text style={styles.drawerItemText}>Logout</Text>
                   </Pressable>
                 </>
@@ -607,7 +607,7 @@ function Field({ label, value, onChangeText, placeholder, keyboardType = 'defaul
 
 function PillButton({ label, active, onPress }) {
   return (
-    <Pressable onPress={onPress} style={[styles.pill, active && styles.pillActive]}>
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.pill, active && styles.pillActive, pressed && styles.pillPressed]}>
       <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
     </Pressable>
   );
@@ -615,7 +615,7 @@ function PillButton({ label, active, onPress }) {
 
 function PrimaryButton({ label, onPress, loading = false, style }) {
   return (
-    <Pressable onPress={onPress} disabled={loading} style={[styles.primaryButton, loading && styles.primaryButtonDisabled, style]}>
+    <Pressable onPress={onPress} disabled={loading} style={({ pressed }) => [styles.primaryButton, loading && styles.primaryButtonDisabled, style, pressed && !loading && styles.primaryButtonPressed]}>
       <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : label}</Text>
     </Pressable>
   );
@@ -956,7 +956,7 @@ function OfflineBookingFlow({ onClose, compact = false }) {
         <View style={styles.rowButtons}>
           <PrimaryButton label="Scan bus QR" onPress={() => setScannerOpen(true)} style={styles.flexButton} />
           {onClose ? (
-            <Pressable style={styles.secondaryAction} onPress={onClose}>
+            <Pressable style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]} onPress={onClose}>
               <Text style={styles.secondaryActionText}>Close</Text>
             </Pressable>
           ) : null}
@@ -1041,7 +1041,7 @@ function OfflineBookingFlow({ onClose, compact = false }) {
               return isOfflineOtpVisible ? (
                 <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{generatedTicket.otp}</Text></View>
               ) : (
-                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValueSmall}>Hidden (outside validity)</Text></View>
+                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValueSmall}>-</Text></View>
               );
             })()}
             <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValueSmall}>Offline</Text></View>
@@ -1218,6 +1218,7 @@ function AuthScreen({ onAuthed }) {
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -1249,6 +1250,16 @@ function AuthScreen({ onAuthed }) {
       useNativeDriver: true,
     }).start();
   }, [mode]);
+
+  useEffect(() => {
+    scaleAnim.setValue(0.98);
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      friction: 8,
+      tension: 40,
+      useNativeDriver: true,
+    }).start();
+  }, [selectedLoginChoice, selectedRegisterChoice]);
 
   const submit = async () => {
     try {
@@ -1286,11 +1297,27 @@ function AuthScreen({ onAuthed }) {
     }
   };
 
+  const handleLoginChoicePress = (choice) => {
+    if (selectedLoginChoice === choice) {
+      setSelectedLoginChoice(null);
+    } else {
+      setSelectedLoginChoice(choice);
+    }
+  };
+
+  const handleRegisterChoicePress = (choice) => {
+    if (selectedRegisterChoice === choice) {
+      setSelectedRegisterChoice(null);
+    } else {
+      setSelectedRegisterChoice(choice);
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={[styles.scrollContent, styles.authScrollContent]}>
       <View style={styles.authScreenLayout}>
         <View style={styles.authScreenTop}>
-          <Animated.View style={[styles.authCard, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+          <Animated.View style={[styles.authCard, { opacity: fadeAnim, transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }]}>
             <Card style={styles.authCard}>
               <View style={styles.modeTabs}>
                 <PillButton label="Login" active={mode === 'login'} onPress={() => setMode('login')} />
@@ -1311,19 +1338,19 @@ function AuthScreen({ onAuthed }) {
 
         {mode === 'login' ? (
           <View style={styles.loginChoiceDock}>
-            <Pressable onPress={() => setSelectedLoginChoice('user')} style={[styles.loginChoiceButton, selectedLoginChoice === 'user' && styles.loginChoiceButtonActive]}>
+            <Pressable onPress={() => handleLoginChoicePress('user')} style={[styles.loginChoiceButton, selectedLoginChoice === 'user' && styles.loginChoiceButtonActive, selectedLoginChoice === 'admin' && styles.loginChoiceButtonHidden]}>
               <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'user' && styles.loginChoiceButtonTextActive]}>User login</Text>
             </Pressable>
-            <Pressable onPress={() => setSelectedLoginChoice('admin')} style={[styles.loginChoiceButton, selectedLoginChoice === 'admin' && styles.loginChoiceButtonActive]}>
+            <Pressable onPress={() => handleLoginChoicePress('admin')} style={[styles.loginChoiceButton, selectedLoginChoice === 'admin' && styles.loginChoiceButtonActive, selectedLoginChoice === 'user' && styles.loginChoiceButtonHidden]}>
               <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'admin' && styles.loginChoiceButtonTextActive]}>Admin login</Text>
             </Pressable>
           </View>
         ) : (
           <View style={styles.loginChoiceDock}>
-            <Pressable onPress={() => setSelectedRegisterChoice('user')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'user' && styles.loginChoiceButtonActive]}>
+            <Pressable onPress={() => handleRegisterChoicePress('user')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'user' && styles.loginChoiceButtonActive, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonHidden]}>
               <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'user' && styles.loginChoiceButtonTextActive]}>User</Text>
             </Pressable>
-            <Pressable onPress={() => setSelectedRegisterChoice('conductor')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonActive]}>
+            <Pressable onPress={() => handleRegisterChoicePress('conductor')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonActive, selectedRegisterChoice === 'user' && styles.loginChoiceButtonHidden]}>
               <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonTextActive]}>Conductor</Text>
             </Pressable>
           </View>
@@ -1373,6 +1400,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
   const [locationPickerSearch, setLocationPickerSearch] = useState('');
   const [loadingLocations, setLoadingLocations] = useState(false);
   const [scanBookingBusId, setScanBookingBusId] = useState(null);
+  const [bookingMode, setBookingMode] = useState(false);
 
   const loadMyBookings = async () => {
     try {
@@ -1532,6 +1560,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
     setLocationPickerSearch('');
     setScanBookingBusId(null);
     setShowOnlyCurrentBooked(false);
+    setBookingMode(false);
   }, [refreshSignal]);
 
   const fetchBus = async (busNumber) => {
@@ -1645,6 +1674,13 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
     }));
     setActiveTab('search');
     setShowOnlyCurrentBooked(false);
+    setBookingMode(true);
+  };
+
+  const closeBooking = () => {
+    setBookingMode(false);
+    setSelectedBus(null);
+    setBookingForm(bookingInitialState);
   };
 
   const closeCategory = () => {
@@ -1988,7 +2024,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                 ) : null}
 
                 {locationPickerItems.map((item) => (
-                  <Pressable key={item} style={styles.locationItemRow} onPress={() => selectLocation(item)}>
+                  <Pressable key={item} style={({ pressed }) => [styles.locationItemRow, pressed && styles.locationItemRowPressed]} onPress={() => selectLocation(item)}>
                     <Text style={styles.locationItemText}>{item}</Text>
                   </Pressable>
                 ))}
@@ -2013,7 +2049,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
 
                 <View style={[styles.rowButtons, styles.modalRowButtons]}>
                   <PrimaryButton label="Search" onPress={searchBusInCategory} loading={categoryLoading} style={styles.flexButton} />
-                  <Pressable style={styles.secondaryAction} onPress={() => { setCategorySearch(''); loadBusesByType(category || 'Local'); }}>
+                  <Pressable style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]} onPress={() => { setCategorySearch(''); loadBusesByType(category || 'Local'); }}>
                     <Text style={styles.secondaryActionText}>Clear</Text>
                   </Pressable>
                 </View>
@@ -2041,46 +2077,46 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
             </ScrollView>
           </Modal>
 
-          <Card>
-            <SectionTitle title="Find your route" description="Search by bus number or scan the bus QR to load its stops and schedule." />
-            <View style={{ marginBottom: 12 }}>
-              <View style={styles.splitRow}>
-                <View style={{ flex: 1, position: 'relative' }}>
-                  <Text style={styles.fieldLabel}>From</Text>
-                  <Pressable style={styles.dropdownButton} onPress={() => openLocationPicker('from')}>
-                    <Text style={[styles.dropdownButtonText, !fromSelection && styles.dropdownPlaceholder]}>{fromSelection || (loadingLocations ? 'Loading…' : 'Select origin')}</Text>
-                  </Pressable>
-                  <Text style={[styles.helperText, { marginTop: 6 }]}>{loadingLocations ? 'Loading cities and routes…' : 'Opens a full-screen city and route list.'}</Text>
+          {!bookingMode ? (
+            <Card>
+              <SectionTitle title="Find your route" description="Search by bus number or scan the bus QR to load its stops and schedule." />
+              <View style={{ marginBottom: 12 }}>
+                <View style={styles.splitRow}>
+                  <View style={{ flex: 1, position: 'relative' }}>
+                    <Text style={styles.fieldLabel}>From</Text>
+                    <Pressable style={({ pressed }) => [styles.dropdownButton, pressed && styles.dropdownButtonPressed]} onPress={() => openLocationPicker('from')}>
+                      <Text style={[styles.dropdownButtonText, !fromSelection && styles.dropdownPlaceholder]}>{fromSelection || (loadingLocations ? 'Loading…' : 'Select origin')}</Text>
+                    </Pressable>
+                    <Text style={[styles.helperText, { marginTop: 6 }]}>{loadingLocations ? 'Loading cities and routes…' : 'Opens a full-screen city and route list.'}</Text>
+                  </View>
+                  <View style={{ flex: 1, position: 'relative' }}>
+                    <Text style={styles.fieldLabel}>To</Text>
+                    <Pressable style={({ pressed }) => [styles.dropdownButton, pressed && styles.dropdownButtonPressed]} onPress={() => openLocationPicker('to')}>
+                      <Text style={[styles.dropdownButtonText, !toSelection && styles.dropdownPlaceholder]}>{toSelection || (loadingLocations ? 'Loading…' : 'Select destination')}</Text>
+                    </Pressable>
+                    <Text style={[styles.helperText, { marginTop: 6 }]}>{loadingLocations ? '' : 'Opens a full-screen city and route list.'}</Text>
+                  </View>
                 </View>
-                <View style={{ flex: 1, position: 'relative' }}>
-                  <Text style={styles.fieldLabel}>To</Text>
-                  <Pressable style={styles.dropdownButton} onPress={() => openLocationPicker('to')}>
-                    <Text style={[styles.dropdownButtonText, !toSelection && styles.dropdownPlaceholder]}>{toSelection || (loadingLocations ? 'Loading…' : 'Select destination')}</Text>
-                  </Pressable>
-                  <Text style={[styles.helperText, { marginTop: 6 }]}>{loadingLocations ? '' : 'Opens a full-screen city and route list.'}</Text>
-                </View>
-              </View>
 
-              <View style={[styles.rowButtons, { marginTop: 12 }]}>
-                <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
-                <Pressable
-                  style={styles.secondaryAction}
-                  onPress={() => {
-                    setScannerOpen(true);
-                  }}
-                >
-                  <Text style={styles.secondaryActionText}>Scan QR</Text>
-                </Pressable>
+                <View style={[styles.rowButtons, { marginTop: 12 }]}>
+                  <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
+                  <Pressable
+                    style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]}
+                    onPress={() => {
+                      setScannerOpen(true);
+                    }}
+                  >
+                    <Text style={styles.secondaryActionText}>Scan QR</Text>
+                  </Pressable>
+                </View>
               </View>
-            </View>
-            {searchResults.length ? (
-              <View>
-                <Text style={styles.helperText}>{searchResults.length} buses found</Text>
-                {searchResults.map((bus) => {
-                  const crowd = getBusCrowdPresentation(bus);
-                  return (
-                    <Pressable key={bus._id} onPress={() => openBusBooking(bus)} style={({ pressed }) => [styles.busSearchResultPressable, pressed && styles.busSearchResultPressableActive]}>
-                      <Card style={styles.busSearchResultCard}>
+              {searchResults.length ? (
+                <View>
+                  <Text style={styles.helperText}>{searchResults.length} buses found</Text>
+                  {searchResults.map((bus) => {
+                    const crowd = getBusCrowdPresentation(bus);
+                    return (
+                      <View key={bus._id} style={styles.busSearchResultCard}>
                         <View style={styles.busTopRow}>
                           <View>
                             <Text style={styles.busSearchResultTitle}>Bus {bus.busNumber}</Text>
@@ -2091,26 +2127,32 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                             <Text style={styles.crowdStatusText}>{crowd.label}</Text>
                           </View>
                         </View>
-                      </Card>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : displayedBus && !hideBusPreview ? (
-              <BusDetailsCard
-                bus={displayedBus}
-                onStartBooking={() => {
-                  openBusBooking(displayedBus);
-                }}
-              />
-            ) : null}
-          </Card>
+                        <PrimaryButton label="Book this bus" onPress={() => openBusBooking(bus)} style={styles.busActionButton} />
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : displayedBus && !hideBusPreview ? (
+                <BusDetailsCard
+                  bus={displayedBus}
+                  onStartBooking={() => {
+                    openBusBooking(displayedBus);
+                  }}
+                />
+              ) : null}
+            </Card>
+          ) : null}
         </>
       ) : null}
 
-      {selectedBus ? (
+      {selectedBus && bookingMode ? (
         <Card>
-          <Text style={styles.cardSubtitle}>Bus {selectedBus.busNumber}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+            <Pressable onPress={closeBooking} style={styles.secondaryAction}>
+              <Text style={styles.secondaryActionText}>← Back</Text>
+            </Pressable>
+            <Text style={[styles.cardSubtitle, { marginLeft: 12 }]}>Bus {selectedBus.busNumber}</Text>
+          </View>
           <SectionTitle title="Book seat" description="Choose date, timing, start stop, end stop, and seat count." />
           <View style={styles.infoRow}>
             {(selectedBus.timings || [{ label: humanTimeRange(selectedBus.startTime, selectedBus.endTime) }]).map((timing) => (
@@ -2128,7 +2170,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
           <View style={styles.splitRow}>
             <View style={styles.fieldBlock}>
               <Text style={styles.fieldLabel}>Start stop</Text>
-              <Pressable style={styles.dropdownButton} onPress={() => { setStopPickerType('start'); setStopPickerOpen(true); }}>
+              <Pressable style={({ pressed }) => [styles.dropdownButton, pressed && styles.dropdownButtonPressed]} onPress={() => { setStopPickerType('start'); setStopPickerOpen(true); }}>
                 <Text style={[styles.dropdownButtonText, !selectedStartStop && styles.dropdownPlaceholder]}>
                   {selectedStartStop || 'Select start stop'}
                 </Text>
@@ -2136,7 +2178,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
             </View>
             <View style={styles.fieldBlock}>
               <Text style={styles.fieldLabel}>End stop</Text>
-              <Pressable style={styles.dropdownButton} onPress={() => { setStopPickerType('end'); setStopPickerOpen(true); }}>
+              <Pressable style={({ pressed }) => [styles.dropdownButton, pressed && styles.dropdownButtonPressed]} onPress={() => { setStopPickerType('end'); setStopPickerOpen(true); }}>
                 <Text style={[styles.dropdownButtonText, !selectedEndStop && styles.dropdownPlaceholder]}>
                   {selectedEndStop || 'Select end stop'}
                 </Text>
@@ -2156,7 +2198,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
               {busStopNames.map((stopName, index) => (
                 <Pressable
                   key={`${stopPickerType}-${index}-${stopName}`}
-                  style={styles.assignListItem}
+                  style={({ pressed }) => [styles.assignListItem, pressed && styles.assignListItemPressed]}
                   onPress={() => {
                     setBookingForm((current) => ({
                       ...current,
@@ -2198,10 +2240,10 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                         <Text style={styles.seatsBadge}>{ticketItem.status}</Text>
                       </View>
                       <View style={styles.rowButtons}>
-                        <Pressable style={styles.secondaryAction} onPress={() => setSelectedTicketId(ticketItem._id)}>
+                        <Pressable style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]} onPress={() => setSelectedTicketId(ticketItem._id)}>
                           <Text style={styles.secondaryActionText}>{isSelected ? 'Selected' : 'View ticket'}</Text>
                         </Pressable>
-                        <Pressable style={styles.liveTrackingButton} onPress={() => openLiveTracking(ticketItem)}>
+                        <Pressable style={({ pressed }) => [styles.liveTrackingButton, pressed && styles.liveTrackingButtonPressed]} onPress={() => openLiveTracking(ticketItem)}>
                           <Text style={styles.liveTrackingButtonText}>Live tracking</Text>
                         </Pressable>
                       </View>
@@ -2216,7 +2258,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                     {isOtpVisible ? (
                       <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{selectedTicket.otp}</Text></View>
                     ) : (
-                      <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValueSmall}>Hidden (outside validity)</Text></View>
+                      <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValueSmall}>-</Text></View>
                     )}
                     <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{selectedTicket.status}</Text></View>
                     <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Timing</Text><Text style={styles.ticketMetaValueSmall}>{ticketTiming || 'n/a'}</Text></View>
@@ -2224,7 +2266,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                   </View>
                   <PrimaryButton label="Refresh status" onPress={refreshSelectedTicket} loading={refreshingTicket} />
                   {selectedTicket.qrDataUrl ? (
-                    <Pressable onPress={() => { setZoomedQrData(selectedTicket.qrDataUrl); setQrZoomOpen(true); }}>
+                    <Pressable onPress={() => { setZoomedQrData(selectedTicket.qrDataUrl); setQrZoomOpen(true); }} style={({ pressed }) => pressed && styles.qrImagePressed}>
                       <Image source={{ uri: selectedTicket.qrDataUrl }} style={styles.ticketQrImage} />
                       <Text style={styles.helperText}>Tap to zoom</Text>
                     </Pressable>
@@ -2632,7 +2674,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                   placeholderTextColor="#94A3B8"
                   style={[styles.input, styles.timeInput]}
                 />
-                <Pressable style={styles.periodPicker} onPress={() => setForm((current) => ({ ...current, endPeriod: current.endPeriod === 'AM' ? 'PM' : 'AM' }))}>
+                <Pressable style={({ pressed }) => [styles.periodPicker, pressed && styles.periodPickerPressed]} onPress={() => setForm((current) => ({ ...current, endPeriod: current.endPeriod === 'AM' ? 'PM' : 'AM' }))}>
                   <Text style={styles.periodText}>{form.endPeriod || 'PM'}</Text>
                 </Pressable>
               </View>
@@ -2664,7 +2706,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
             </View>
           ))}
           <View style={styles.rowButtons}>
-            <Pressable style={styles.secondaryAction} onPress={addStop}>
+            <Pressable style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]} onPress={addStop}>
               <Text style={styles.secondaryActionText}>Add stop</Text>
             </Pressable>
             <PrimaryButton label="Save bus" onPress={saveBus} loading={loading} style={styles.flexButton} />
@@ -2792,7 +2834,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       <Modal visible={assignModalOpen} transparent animationType="fade" onRequestClose={closeAssignModal}>
         <View style={styles.centeredBackdrop}>
           <View style={styles.assignModalBox}>
-            <Text style={styles.cardTitle}>Assign conductor</Text>
+            <Text style={styles.cardTitle1}>Assign conductor</Text>
             <Text style={styles.cardSubtitle}>{assigningBus ? `${assigningBus.busNumber} — ${assigningBus.from} → ${assigningBus.to}` : ''}</Text>
             <View style={{ marginTop: 12 }}>
               <Field label="" value={conductorSearch} onChangeText={setConductorSearch} placeholder="Search conductors by name or email" />
@@ -2802,7 +2844,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                 {loadingConductors ? <View style={{ padding: 12 }}><Text style={styles.helperText}>Loading...</Text></View> : null}
                 {(conductors || []).filter((c) => (`${c.name} ${c.email}`).toLowerCase().includes((conductorSearch || '').toLowerCase())).map((c) => (
                   <Pressable key={c._id} style={styles.assignListItem} onPress={() => assignConductor(c._id)}>
-                    <Text style={styles.cardTitle}>{c.name}</Text>
+                    <Text style={styles.cardTitle1}>{c.name}</Text>
                     <Text style={styles.helperText}>{c.email}</Text>
                   </Pressable>
                 ))}
@@ -2993,7 +3035,7 @@ function ConductorDashboard({ session, onLogout }) {
                     <Text style={styles.helperText}>{hasStopCoordinates(stop) ? `${stop.lat.toFixed(6)}, ${stop.lng.toFixed(6)}` : '0, 0'}</Text>
                   </View>
                   {hasStopCoordinates(stop) ? null : (
-                    <Pressable style={styles.getLocationButton} onPress={() => updateStopLocation(bus._id, idx)} disabled={!!stopLoading[`${bus._id}-${idx}`]}>
+                    <Pressable style={({ pressed }) => [styles.getLocationButton, pressed && styles.getLocationButtonPressed]} onPress={() => updateStopLocation(bus._id, idx)} disabled={!!stopLoading[`${bus._id}-${idx}`]}>
                       {stopLoading[`${bus._id}-${idx}`] ? (
                         <ActivityIndicator color="#fff" />
                       ) : (
@@ -3006,7 +3048,7 @@ function ConductorDashboard({ session, onLogout }) {
             })()}
 
             <View style={{ marginTop: 12, alignItems: 'center' }}>
-              <Pressable onPress={() => { setZoomedQrData(`bus:${bus._id}`); setQrZoomOpen(true); }}>
+              <Pressable onPress={() => { setZoomedQrData(`bus:${bus._id}`); setQrZoomOpen(true); }} style={({ pressed }) => pressed && styles.qrImagePressed}>
                 <View style={styles.localQrWrap}>
                   <SvgQRCode value={`bus:${bus._id}`} size={150} />
                 </View>
@@ -4484,5 +4526,58 @@ const styles = StyleSheet.create({
   dropdownPlaceholder: {
     color: '#94A3B8',
     fontWeight: '600',
+  },
+  pillPressed: {
+    opacity: 0.7,
+  },
+  primaryButtonPressed: {
+    opacity: 0.85,
+  },
+  drawerItemPressed: {
+    opacity: 0.75,
+  },
+  ghostIconPressed: {
+    opacity: 0.7,
+  },
+  ghostButtonPressed: {
+    opacity: 0.75,
+  },
+  headerMenuButtonPressed: {
+    opacity: 0.75,
+  },
+  secondaryActionPressed: {
+    opacity: 0.7,
+  },
+  aiLauncherButtonPressed: {
+    opacity: 0.85,
+  },
+  dropdownButtonPressed: {
+    opacity: 0.8,
+  },
+  assignListItemPressed: {
+    opacity: 0.7,
+  },
+  liveTrackingButtonPressed: {
+    opacity: 0.85,
+  },
+  qrImagePressed: {
+    opacity: 0.8,
+  },
+  periodPickerPressed: {
+    opacity: 0.75,
+  },
+  getLocationButtonPressed: {
+    opacity: 0.85,
+  },
+  locationItemRowPressed: {
+    opacity: 0.75,
+  },
+  loginChoiceButtonPressed: {
+    opacity: 0.8,
+  },
+  loginChoiceButtonHidden: {
+    opacity: 0,
+    transform: [{ scale: 0.8 }],
+    pointerEvents: 'none',
   },
 });
