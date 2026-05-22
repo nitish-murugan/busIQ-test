@@ -2531,6 +2531,39 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
             </View>
           </View>
           <View style={styles.splitRow}>
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>Start time</Text>
+              <View style={styles.timeRow}>
+                <TextInput
+                  value={form.startTime}
+                  onChangeText={(startTime) => setForm((current) => ({ ...current, startTime }))}
+                  placeholder="08:00"
+                  placeholderTextColor="#94A3B8"
+                  style={[styles.input, styles.timeInput]}
+                />
+                <Pressable style={styles.periodPicker} onPress={() => setForm((current) => ({ ...current, startPeriod: current.startPeriod === 'AM' ? 'PM' : 'AM' }))}>
+                  <Text style={styles.periodText}>{form.startPeriod || 'AM'}</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.fieldBlock}>
+              <Text style={styles.fieldLabel}>End time</Text>
+              <View style={styles.timeRow}>
+                <TextInput
+                  value={form.endTime}
+                  onChangeText={(endTime) => setForm((current) => ({ ...current, endTime }))}
+                  placeholder="12:00"
+                  placeholderTextColor="#94A3B8"
+                  style={[styles.input, styles.timeInput]}
+                />
+                <Pressable style={styles.periodPicker} onPress={() => setForm((current) => ({ ...current, endPeriod: current.endPeriod === 'AM' ? 'PM' : 'AM' }))}>
+                  <Text style={styles.periodText}>{form.endPeriod || 'PM'}</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+          <View style={styles.splitRow}>
             <Field label="From" value={form.from} onChangeText={(from) => setForm((current) => ({ ...current, from }))} placeholder="City A" />
             <Field label="To" value={form.to} onChangeText={(to) => setForm((current) => ({ ...current, to }))} placeholder="City B" />
           </View>
@@ -2696,21 +2729,12 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
 }
 
 function ConductorDashboard({ session, onLogout }) {
-  const [activeTab, setActiveTab] = useState('buses');
   const [buses, setBuses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [stopLoading, setStopLoading] = useState({});
   const [busVisibilityLoading, setBusVisibilityLoading] = useState({});
   const [scannerOpen, setScannerOpen] = useState(false);
   const [verificationFlash, setVerificationFlash] = useState(null);
-  const [selectedBusForTiming, setSelectedBusForTiming] = useState(null);
-  const [startHour, setStartHour] = useState('');
-  const [startMinute, setStartMinute] = useState('');
-  const [startPeriod, setStartPeriod] = useState('AM');
-  const [endHour, setEndHour] = useState('');
-  const [endMinute, setEndMinute] = useState('');
-  const [endPeriod, setEndPeriod] = useState('PM');
-  const [timingLoading, setTimingLoading] = useState(false);
 
   const refreshBuses = async () => {
     try {
@@ -2818,82 +2842,18 @@ function ConductorDashboard({ session, onLogout }) {
     }
   };
 
-  const addBusTiming = async () => {
-    if (!selectedBusForTiming) {
-      Alert.alert('Select a bus', 'Please select a bus first.');
-      return;
-    }
-
-    const sHour = String(startHour || '').trim();
-    const sMinute = String(startMinute || '').trim();
-    const sPeriod = startPeriod;
-    const eHour = String(endHour || '').trim();
-    const eMinute = String(endMinute || '').trim();
-    const ePeriod = endPeriod;
-
-    if (!sHour || !sMinute || !eHour || !eMinute) {
-      Alert.alert('Invalid time', 'Please enter both start and end times (hour and minute).');
-      return;
-    }
-
-    const sHourNum = Number(sHour);
-    const sMinuteNum = Number(sMinute);
-    const eHourNum = Number(eHour);
-    const eMinuteNum = Number(eMinute);
-
-    if (sHourNum < 1 || sHourNum > 12 || sMinuteNum < 0 || sMinuteNum > 59) {
-      Alert.alert('Invalid start time', 'Start hour must be 1-12 and minute must be 0-59.');
-      return;
-    }
-
-    if (eHourNum < 1 || eHourNum > 12 || eMinuteNum < 0 || eMinuteNum > 59) {
-      Alert.alert('Invalid end time', 'End hour must be 1-12 and minute must be 0-59.');
-      return;
-    }
-
-    const startTime = `${sHour.padStart(2, '0')}:${sMinute.padStart(2, '0')} ${sPeriod}`;
-    const endTime = `${eHour.padStart(2, '0')}:${eMinute.padStart(2, '0')} ${ePeriod}`;
-
-    try {
-      setTimingLoading(true);
-      const data = await requestJson(`/buses/${selectedBusForTiming._id}/timings`, {
-        method: 'POST',
-        token: session.token,
-        body: { startTime, endTime },
-      });
-      Alert.alert('Success', 'Timing added successfully.');
-      refreshBuses();
-      setStartHour('');
-      setStartMinute('');
-      setStartPeriod('AM');
-      setEndHour('');
-      setEndMinute('');
-      setEndPeriod('PM');
-    } catch (error) {
-      Alert.alert('Failed to add timing', error.message);
-    } finally {
-      setTimingLoading(false);
-    }
-  };
-
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
       <AppHeader session={session} onLogout={onLogout} />
-      <View style={styles.tabRow}>
-        <PillButton label="Assigned buses" active={activeTab === 'buses'} onPress={() => setActiveTab('buses')} />
-        <PillButton label="Assign bus timing" active={activeTab === 'timing'} onPress={() => setActiveTab('timing')} />
-      </View>
-
-      {activeTab === 'buses' ? (
-        <Card>
-          <SectionTitle title="Assigned buses" description="Buses assigned to you. Update stop locations or verify tickets." />
-          {verificationFlash ? (
-            <View style={styles.doneBanner}>
-              <Text style={styles.doneBannerTitle}>{verificationFlash.title}</Text>
-              <Text style={styles.doneBannerText}>{verificationFlash.message}</Text>
-            </View>
-          ) : null}
-          {buses.length ? buses.map((bus) => (
+      <Card>
+        <SectionTitle title="Assigned buses" description="Buses assigned to you. Update stop locations or verify tickets." />
+        {verificationFlash ? (
+          <View style={styles.doneBanner}>
+            <Text style={styles.doneBannerTitle}>{verificationFlash.title}</Text>
+            <Text style={styles.doneBannerText}>{verificationFlash.message}</Text>
+          </View>
+        ) : null}
+        {buses.length ? buses.map((bus) => (
           <View key={bus._id} style={{ marginBottom: 12 }}>
             <Text style={styles.cardTitle}>Bus {bus.busNumber}</Text>
             <Text style={styles.cardSubtitle}>{bus.from} → {bus.to}</Text>
@@ -2958,142 +2918,9 @@ function ConductorDashboard({ session, onLogout }) {
             </View>
           </View>
         )) : <Text style={styles.helperText}>No buses assigned to you.</Text>}
-        </Card>
-      ) : null}
+      </Card>
 
-      {activeTab === 'timing' ? (
-        <Card>
-          <SectionTitle title="Assign bus timing" description="Select a bus and add timing schedules." />
-          <View style={styles.fieldBlock}>
-            <Text style={styles.fieldLabel}>Select bus</Text>
-            <View style={styles.pickerContainer}>
-              {buses.map((bus) => (
-                <Pressable
-                  key={bus._id}
-                  style={[styles.pickerItem, selectedBusForTiming?._id === bus._id && styles.pickerItemActive]}
-                  onPress={() => setSelectedBusForTiming(bus)}
-                >
-                  <Text style={[styles.pickerItemText, selectedBusForTiming?._id === bus._id && styles.pickerItemTextActive]}>
-                    Bus {bus.busNumber} - {bus.from} to {bus.to}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {selectedBusForTiming ? (
-            <>
-              <Text style={styles.sectionMiniLabel}>Start Time</Text>
-              <View style={styles.splitRow}>
-                <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldLabel}>Hour</Text>
-                  <TextInput
-                    value={startHour}
-                    onChangeText={setStartHour}
-                    placeholder="09"
-                    placeholderTextColor="#94A3B8"
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldLabel}>Minute</Text>
-                  <TextInput
-                    value={startMinute}
-                    onChangeText={setStartMinute}
-                    placeholder="00"
-                    placeholderTextColor="#94A3B8"
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldLabel}>Period</Text>
-                  <View style={styles.periodRow}>
-                    <Pressable
-                      style={[styles.periodButton, startPeriod === 'AM' && styles.periodButtonActive]}
-                      onPress={() => setStartPeriod('AM')}
-                    >
-                      <Text style={[styles.periodButtonText, startPeriod === 'AM' && styles.periodButtonTextActive]}>AM</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.periodButton, startPeriod === 'PM' && styles.periodButtonActive]}
-                      onPress={() => setStartPeriod('PM')}
-                    >
-                      <Text style={[styles.periodButtonText, startPeriod === 'PM' && styles.periodButtonTextActive]}>PM</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-
-              <Text style={styles.sectionMiniLabel}>End Time</Text>
-              <View style={styles.splitRow}>
-                <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldLabel}>Hour</Text>
-                  <TextInput
-                    value={endHour}
-                    onChangeText={setEndHour}
-                    placeholder="10"
-                    placeholderTextColor="#94A3B8"
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldLabel}>Minute</Text>
-                  <TextInput
-                    value={endMinute}
-                    onChangeText={setEndMinute}
-                    placeholder="30"
-                    placeholderTextColor="#94A3B8"
-                    keyboardType="number-pad"
-                    maxLength={2}
-                    style={styles.input}
-                  />
-                </View>
-                <View style={styles.fieldBlock}>
-                  <Text style={styles.fieldLabel}>Period</Text>
-                  <View style={styles.periodRow}>
-                    <Pressable
-                      style={[styles.periodButton, endPeriod === 'AM' && styles.periodButtonActive]}
-                      onPress={() => setEndPeriod('AM')}
-                    >
-                      <Text style={[styles.periodButtonText, endPeriod === 'AM' && styles.periodButtonTextActive]}>AM</Text>
-                    </Pressable>
-                    <Pressable
-                      style={[styles.periodButton, endPeriod === 'PM' && styles.periodButtonActive]}
-                      onPress={() => setEndPeriod('PM')}
-                    >
-                      <Text style={[styles.periodButtonText, endPeriod === 'PM' && styles.periodButtonTextActive]}>PM</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-              <PrimaryButton label="Add timing" onPress={addBusTiming} loading={timingLoading} />
-
-              <Text style={styles.sectionMiniLabel}>Current timings for Bus {selectedBusForTiming.busNumber}</Text>
-              {selectedBusForTiming.timings && selectedBusForTiming.timings.length > 0 ? (
-                <View style={styles.timingList}>
-                  {selectedBusForTiming.timings.map((timing, index) => (
-                    <View key={timing._id || index} style={styles.timingItem}>
-                      <Text style={styles.timingText}>{timing.label}</Text>
-                    </View>
-                  ))}
-                </View>
-              ) : (
-                <Text style={styles.helperText}>No timings assigned yet.</Text>
-              )}
-            </>
-          ) : (
-            <Text style={styles.helperText}>Select a bus to assign timings.</Text>
-          )}
-        </Card>
-      ) : null}
-
-      {activeTab === 'buses' && scannerOpen ? (
+      {scannerOpen ? (
         <ScannerPanel
           purpose="ticket"
           label="Scan ticket QR"
@@ -4531,71 +4358,5 @@ const styles = StyleSheet.create({
   dropdownPlaceholder: {
     color: '#94A3B8',
     fontWeight: '600',
-  },
-  pickerContainer: {
-    gap: 8,
-  },
-  pickerItem: {
-    backgroundColor: '#0B162B',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.16)',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  pickerItemActive: {
-    backgroundColor: '#0F172A',
-    borderColor: '#7DD3FC',
-  },
-  pickerItemText: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  pickerItemTextActive: {
-    color: '#7DD3FC',
-  },
-  periodRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  periodButton: {
-    flex: 1,
-    backgroundColor: '#0B162B',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.16)',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  periodButtonActive: {
-    backgroundColor: '#0F172A',
-    borderColor: '#7DD3FC',
-  },
-  periodButtonText: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  periodButtonTextActive: {
-    color: '#7DD3FC',
-  },
-  timingList: {
-    gap: 8,
-    marginTop: 8,
-  },
-  timingItem: {
-    backgroundColor: '#0B162B',
-    borderWidth: 1,
-    borderColor: 'rgba(148,163,184,0.16)',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  timingText: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
   },
 });

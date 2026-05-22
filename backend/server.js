@@ -50,8 +50,8 @@ const busSchema = new mongoose.Schema(
   {
     busNumber: { type: String, required: true, unique: true, trim: true },
     seats: { type: Number, required: true },
-    startTime: { type: String },
-    endTime: { type: String },
+    startTime: { type: String, required: true },
+    endTime: { type: String, required: true },
     daily: { type: Boolean, default: true },
     isVisible: { type: Boolean, default: true },
     busType: { type: String, enum: ['Local', 'TNSTC', 'Others'], default: 'Local' },
@@ -715,8 +715,8 @@ app.post('/api/routes/plan', authRequired, async (req, res) => {
 
 app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
   try {
-  const { busNumber, seats, daily, from, to, stops, busType, conductorId } = req.body || {};
-
+  const { busNumber, seats, startTime, endTime, startPeriod, endPeriod, daily, from, to, stops, busType, conductorId } = req.body || {};
+    
     // Process stops: handle both old string format and new object format with coordinates
     const cleanStops = Array.isArray(stops) ? stops.map((stop) => {
       if (typeof stop === 'string') {
@@ -737,8 +737,8 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
       return null;
     }).filter((stop) => stop && stop.name) : [];
 
-    if (!busNumber || !seats || !from || !to) {
-      return res.status(400).json({ message: 'Bus number, seats, from, and to are required' });
+    if (!busNumber || !seats || !startTime || !endTime || !from || !to) {
+      return res.status(400).json({ message: 'Bus number, seats, timings, from, and to are required' });
     }
 
     if (cleanStops.length < 2) {
@@ -750,16 +750,30 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
       return res.status(409).json({ message: 'Bus number already exists' });
     }
 
+    // If frontend provides AM/PM dropdowns (`startPeriod`/`endPeriod`), include them in stored labels.
+    const sp = startPeriod ? String(startPeriod).trim().toUpperCase() : '';
+    const ep = endPeriod ? String(endPeriod).trim().toUpperCase() : '';
+    const startLabel = sp ? `${startTime} ${sp}` : String(startTime);
+    const endLabel = ep ? `${endTime} ${ep}` : String(endTime);
+
     const bus = await Bus.create({
       busNumber: busNumber.trim(),
       seats: Number(seats),
+      startTime: startLabel,
+      endTime: endLabel,
       daily: Boolean(daily),
       busType: busType || 'Local',
       from: from.trim(),
       to: to.trim(),
       stops: cleanStops,
       conductor: conductorId || undefined,
-      timings: [],
+      timings: [
+        {
+          label: `${startLabel} - ${endLabel}`,
+          startTime: startLabel,
+          endTime: endLabel,
+        },
+      ],
       createdBy: req.auth.id,
       qrToken: createQrToken('bus', new mongoose.Types.ObjectId().toString()),
     });
@@ -890,67 +904,6 @@ app.post('/api/buses/:id/visibility', authRequired, conductorOrAdmin, async (req
     await bus.save();
 
     return res.json({ message: 'Bus visibility updated', bus: bus.toObject() });
-  } catch (error) {
-    return res.status(500).json({ message: error.message });
-  }
-});
-
-// Conductor (or admin) can add a timing to a bus
-app.post('/api/buses/:id/timings', authRequired, conductorOrAdmin, async (req, res) => {
-  try {
-    const { startTime, endTime } = req.body || {};
-    if (!startTime || typeof startTime !== 'string') {
-      return res.status(400).json({ message: 'startTime is required (e.g., "09:00 AM")' });
-    }
-    if (!endTime || typeof endTime !== 'string') {
-      return res.status(400).json({ message: 'endTime is required (e.g., "10:30 AM")' });
-    }
-
-    const bus = await Bus.findById(req.params.id);
-    if (!bus) {
-      return res.status(404).json({ message: 'Bus not found' });
-    }
-
-    // Verify conductor is assigned to this bus
-    if (req.auth.role === 'conductor' && String(bus.conductor || '') !== String(req.auth.id)) {
-      return res.status(403).json({ message: 'Only assigned conductor may add timings' });
-    }
-
-    // Validate time format
-    const startMatch = startTime.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    const endMatch = endTime.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    if (!startMatch) {
-      return res.status(400).json({ message: 'Invalid startTime format. Expected "HH:MM AM" or "HH:MM PM"' });
-    }
-    if (!endMatch) {
-      return res.status(400).json({ message: 'Invalid endTime format. Expected "HH:MM AM" or "HH:MM PM"' });
-    }
-
-    // Create label
-    const label = `${startTime} - ${endTime}`;
-
-    // Check if timing already exists
-    const existingTiming = bus.timings.find((t) => t.label === label);
-    if (existingTiming) {
-      return res.status(409).json({ message: 'Timing already exists' });
-    }
-
-    // Add the new timing
-    bus.timings.push({
-      label,
-      startTime,
-      endTime,
-    });
-
-    // Update top-level startTime and endTime with the first timing if not set
-    if (!bus.startTime && bus.timings.length > 0) {
-      bus.startTime = bus.timings[0].startTime;
-      bus.endTime = bus.timings[0].endTime;
-    }
-
-    await bus.save();
-
-    return res.json({ message: 'Timing added successfully', bus: bus.toObject() });
   } catch (error) {
     return res.status(500).json({ message: error.message });
   }
