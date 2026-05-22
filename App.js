@@ -255,7 +255,7 @@ async function requestJson(path, { method = 'GET', body, token } = {}) {
         const backendMessage = String(data?.message || '').trim();
         const statusMessage = `Request failed with status ${response.status}`;
         const attemptedUrl = `${baseUrl}${path}`;
-        throw new Error(backendMessage ? `${backendMessage} (${statusMessage}) - ${attemptedUrl}` : `${statusMessage} - ${attemptedUrl}`);
+        throw new Error(backendMessage);
       }
 
       return data;
@@ -477,7 +477,12 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
       );
     } catch (error) {
       // If verification failed (already verified / outside window / not found), show alert
-      Alert.alert('Verification failed', error.message);
+      console.log(error.message);
+      if (error.message.includes('already')) {
+        Alert.alert('Ticket already verified');
+      } else {
+        Alert.alert('Verification failed', error.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -511,7 +516,7 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
             <Image source={require('./assets/appLogo.png')} style={styles.headerBrandLogo} />
             <View>
               <Text style={styles.headerBrandTitle}>BusIQ</Text>
-              <Text style={styles.headerBrandSubtitle}>Smart booking and tracking</Text>
+              <Text style={styles.headerBrandSubtitle}>SMake every ride Intelligent</Text>
             </View>
           </View>
         )}
@@ -529,9 +534,7 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
                 </Pressable>
               ) 
               : null}
-              <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.ghostButtonPressed]} onPress={onLogout}>
-                <Text style={styles.ghostButtonText}>Logout</Text>
-              </Pressable>
+              
             </>
           ) : null}
         </View>
@@ -613,10 +616,54 @@ function PillButton({ label, active, onPress }) {
   );
 }
 
+function DotLoading() {
+  const dotAnimations = useRef([...Array(5)].map(() => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    const animations = dotAnimations.map((anim, index) => {
+      return Animated.sequence([
+        Animated.delay(index * 150),
+        Animated.timing(anim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.timing(anim, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]);
+    });
+
+    const loop = Animated.loop(Animated.parallel(animations));
+    loop.start();
+
+    return () => loop.stop();
+  }, []);
+
+  return (
+    <View style={styles.dotLoadingContainer}>
+      {dotAnimations.map((anim, index) => (
+        <Animated.View
+          key={index}
+          style={[
+            styles.dot,
+            {
+              opacity: anim,
+              transform: [{ scale: anim.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }) }],
+            },
+          ]}
+        />
+      ))}
+    </View>
+  );
+}
+
 function PrimaryButton({ label, onPress, loading = false, style }) {
   return (
     <Pressable onPress={onPress} disabled={loading} style={({ pressed }) => [styles.primaryButton, loading && styles.primaryButtonDisabled, style, pressed && !loading && styles.primaryButtonPressed]}>
-      <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : label}</Text>
+      {loading ? <DotLoading /> : <Text style={styles.primaryButtonText}>{label}</Text>}
     </Pressable>
   );
 }
@@ -1238,17 +1285,18 @@ function AuthScreen({ onAuthed }) {
     fadeAnim.setValue(0);
     slideAnim.setValue(20);
 
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-
-    Animated.timing(slideAnim, {
-      toValue: 0,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }),
+    ]).start();
   }, [mode]);
 
   useEffect(() => {
@@ -1289,6 +1337,7 @@ function AuthScreen({ onAuthed }) {
         body: payload,
       });
 
+      await AsyncStorage.setItem('session', JSON.stringify(data));
       onAuthed(data);
     } catch (error) {
       Alert.alert('Authentication failed', error.message);
@@ -2100,14 +2149,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
 
                 <View style={[styles.rowButtons, { marginTop: 12 }]}>
                   <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
-                  <Pressable
-                    style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]}
-                    onPress={() => {
-                      setScannerOpen(true);
-                    }}
-                  >
-                    <Text style={styles.secondaryActionText}>Scan QR</Text>
-                  </Pressable>
+                  
                 </View>
               </View>
               {searchResults.length ? (
@@ -2116,7 +2158,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                   {searchResults.map((bus) => {
                     const crowd = getBusCrowdPresentation(bus);
                     return (
-                      <View key={bus._id} style={styles.busSearchResultCard}>
+                      <Pressable key={bus._id} onPress={() => openBusBooking(bus)} style={({ pressed }) => [styles.busSearchResultCard, pressed && styles.busSearchResultCardPressed]}>
                         <View style={styles.busTopRow}>
                           <View>
                             <Text style={styles.busSearchResultTitle}>Bus {bus.busNumber}</Text>
@@ -2127,8 +2169,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                             <Text style={styles.crowdStatusText}>{crowd.label}</Text>
                           </View>
                         </View>
-                        <PrimaryButton label="Book this bus" onPress={() => openBusBooking(bus)} style={styles.busActionButton} />
-                      </View>
+                      </Pressable>
                     );
                   })}
                 </View>
@@ -2186,7 +2227,16 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
             </View>
           </View>
 
-          <PrimaryButton label={`Just Pay ${currencyText(Number(bookingForm.seats) * 249)}`} onPress={createBooking} loading={loading} />
+          <View style={styles.paymentDivider} />
+          <View style={styles.paymentButtonsRow}>
+            <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
+              <Text style={styles.paymentButtonText}>Pay using UPI</Text>
+            </Pressable>
+            <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
+              <Text style={styles.paymentButtonText}>Pay using wallet</Text>
+            </Pressable>
+          </View>
+          <PrimaryButton label={`Pay offline`} onPress={createBooking} loading={loading} />
         </Card>
       ) : null}
 
@@ -2576,7 +2626,11 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       );
     } catch (error) {
       // If verification failed (already verified / outside window / not found), show alert
-      Alert.alert('Verification failed', error.message);
+      if (error.message.includes('already verified')) {
+        Alert.alert('Ticket already verified');
+      } else {
+        Alert.alert('Verification failed', error.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -2637,14 +2691,11 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
         <Card>
           <SectionTitle title="Add a bus" description="Capture the route, timings, stops, and seating once. The app creates a QR instantly." />
           <Field label="Bus number" value={form.busNumber} onChangeText={(busNumber) => setForm((current) => ({ ...current, busNumber }))} placeholder="BUS-101" />
-          <View style={styles.splitRow}>
-            <Field label="Seats" value={form.seats} onChangeText={(seats) => setForm((current) => ({ ...current, seats }))} keyboardType="number-pad" placeholder="40" />
-            <View style={styles.switchBlock}>
-              <Text style={styles.fieldLabel}>Daily service</Text>
-              <View style={styles.switchRow}>
-                <Text style={styles.switchText}>{form.daily ? 'Daily' : 'Special trip'}</Text>
-                <Switch value={form.daily} onValueChange={(daily) => setForm((current) => ({ ...current, daily }))} />
-              </View>
+          <View style={styles.switchBlock}>
+            <Text style={styles.fieldLabel}>Daily service</Text>
+            <View style={styles.switchRow}>
+              <Text style={styles.switchText}>{form.daily ? 'Daily' : 'Special trip'}</Text>
+              <Switch value={form.daily} onValueChange={(daily) => setForm((current) => ({ ...current, daily }))} />
             </View>
           </View>
           <View style={styles.splitRow}>
@@ -3096,6 +3147,20 @@ export default function App() {
   const [trackingUrl, setTrackingUrl] = useState('');
 
   useEffect(() => {
+    const loadSession = async () => {
+      try {
+        const savedSession = await AsyncStorage.getItem('session');
+        if (savedSession) {
+          setSession(JSON.parse(savedSession));
+        }
+      } catch (error) {
+        console.error('Failed to load session:', error);
+      }
+    };
+    loadSession();
+  }, []);
+
+  useEffect(() => {
     let isActive = true;
 
     const loadTrackingUrl = async () => {
@@ -3138,11 +3203,11 @@ export default function App() {
               <AuthScreen onAuthed={setSession} />
             </>
           ) : session.user.role === 'admin' ? (
-            <AdminDashboard session={session} onLogout={() => setSession(null)} refreshSignal={refreshSignal} trackingUrl={trackingUrl} onTrackingUrlChange={setTrackingUrl} />
+            <AdminDashboard session={session} onLogout={async () => { await AsyncStorage.removeItem('session'); setSession(null); }} refreshSignal={refreshSignal} trackingUrl={trackingUrl} onTrackingUrlChange={setTrackingUrl} />
           ) : session.user.role === 'conductor' ? (
-            <ConductorDashboard session={session} onLogout={() => setSession(null)} refreshSignal={refreshSignal} />
+            <ConductorDashboard session={session} onLogout={async () => { await AsyncStorage.removeItem('session'); setSession(null); }} refreshSignal={refreshSignal} />
           ) : (
-            <UserDashboard session={session} onLogout={() => setSession(null)} refreshSignal={refreshSignal} trackingUrl={trackingUrl} />
+            <UserDashboard session={session} onLogout={async () => { await AsyncStorage.removeItem('session'); setSession(null); }} refreshSignal={refreshSignal} trackingUrl={trackingUrl} />
           )}
         </ScrollView>
         {session ? <RouteAssistantLauncher session={session} /> : null}
@@ -4579,5 +4644,48 @@ const styles = StyleSheet.create({
     opacity: 0,
     transform: [{ scale: 0.8 }],
     pointerEvents: 'none',
+  },
+  dotLoadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FFFFFF',
+  },
+  busSearchResultCardPressed: {
+    opacity: 0.85,
+  },
+  paymentDivider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 16,
+  },
+  paymentButtonsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  paymentButton: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  paymentButtonPressed: {
+    opacity: 0.7,
+  },
+  paymentButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
