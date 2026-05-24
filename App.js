@@ -5,6 +5,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 import SvgQRCode from 'react-native-qrcode-svg';
 import * as Location from 'expo-location';
+import { WebView } from 'react-native-webview';
 
 // npx eas-cli@latest build -p android --profile preview
 
@@ -398,9 +399,11 @@ async function syncOfflineTickets(userId, token) {
   }
 }
 
-function buildMapEmbedUrl(latitude, longitude) {
+function buildMapEmbedUrl(latitude, longitude, userLat, userLng) {
   const lat = Number(latitude);
   const lng = Number(longitude);
+  const userLatNum = Number(userLat);
+  const userLngNum = Number(userLng);
 
   if (Number.isNaN(lat) || Number.isNaN(lng)) {
     return null;
@@ -413,7 +416,60 @@ function buildMapEmbedUrl(latitude, longitude) {
   const top = lat + latDelta;
   const bottom = lat - latDelta;
 
-  return `https://www.openstreetmap.org/export/embed.html?bbox=${left}%2C${bottom}%2C${right}%2C${top}&layer=mapnik&marker=${lat}%2C${lng}`;
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    var map = L.map('map').setView([${lat}, ${lng}], 18);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+    
+    var busIcon = L.divIcon({
+      className: 'custom-div-icon',
+      html: '<div style="background-color: #EF4444; width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
+      iconSize: [16, 16],
+      iconAnchor: [8, 8]
+    });
+    
+    var userIcon = L.divIcon({
+      className: 'custom-div-icon',
+      html: '<div style="background-color: #10B981; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
+      iconSize: [12, 12],
+      iconAnchor: [6, 6]
+    });
+    
+    L.marker([${lat}, ${lng}], {icon: busIcon}).addTo(map).bindPopup('Bus Location');
+    ${userLat && !Number.isNaN(userLatNum) && userLng && !Number.isNaN(userLngNum) ?
+      `L.marker([${userLatNum}, ${userLngNum}], {icon: userIcon}).addTo(map).bindPopup('Your Location');` : ''}
+  </script>
+</body>
+</html>`;
+
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null }) {
@@ -1121,6 +1177,8 @@ function LiveTrackingPanel({ ticket, onClose, trackingUrl }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [history, setHistory] = useState([]);
+  const [userLocation, setUserLocation] = useState(null);
+  const [proximityNotified, setProximityNotified] = useState(false);
 
   const ticketBusNumber = normalizeBusNumber(ticket?.bus?.busNumber || ticket?.busNumber);
   const liveBusNumber = normalizeBusNumber(locationData?.busNumber);
@@ -1169,21 +1227,91 @@ function LiveTrackingPanel({ ticket, onClose, trackingUrl }) {
     };
   }, [ticket?._id, trackingUrl]);
 
-  const mapUrl = useMemo(() => buildMapEmbedUrl(locationData?.latitude, locationData?.longitude), [locationData]);
+  useEffect(() => {
+    let isActive = true;
+
+    const loadUserLocation = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          return;
+        }
+
+        const location = await Location.getCurrentPositionAsync({});
+        if (isActive) {
+          setUserLocation({
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+          });
+        }
+      } catch (error) {
+        console.error('Error getting user location:', error);
+      }
+    };
+
+    loadUserLocation();
+    const locationIntervalId = setInterval(loadUserLocation, 10000);
+
+    return () => {
+      isActive = false;
+      clearInterval(locationIntervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!locationData || !ticket?.bus?.stops || proximityNotified) {
+      return;
+    }
+
+    const endStop = ticket.endStop;
+    const stops = ticket.bus.stops || [];
+    const endStopIndex = stops.findIndex((stop) => stop.name === endStop);
+
+    if (endStopIndex <= 0) {
+      return;
+    }
+
+    const previousStop = stops[endStopIndex - 1];
+    if (!previousStop) {
+      return;
+    }
+
+    const distanceToPreviousStop = calculateDistance(
+      locationData.latitude,
+      locationData.longitude,
+      previousStop.lat,
+      previousStop.lng
+    );
+
+    if (distanceToPreviousStop < 0.5) {
+      setProximityNotified(true);
+      try {
+        Vibration.vibrate([200, 100, 200]);
+      } catch (e) {
+        console.log('Vibration failed', e);
+      }
+      Alert.alert(
+        'Approaching your stop',
+        `The bus is about to reach ${previousStop.name}. Get ready to alight at ${endStop}.`
+      );
+    }
+  }, [locationData, ticket, proximityNotified]);
+
+  const mapUrl = useMemo(() => buildMapEmbedUrl(locationData?.latitude, locationData?.longitude, userLocation?.latitude, userLocation?.longitude), [locationData, userLocation]);
 
   return (
     <Modal visible transparent={false} animationType="slide" onRequestClose={onClose}>
       <View style={styles.trackingModalScreen}>
         <View style={styles.trackingModalHeader}>
           <View>
-            <Text style={styles.kicker}>Live tracking</Text>
+            <View style={styles.trackingHeaderRow}>
+              <Text style={styles.kicker}>Live tracking</Text>
+              <Pressable onPress={onClose} style={styles.secondaryButton}>
+                <Text style={styles.secondaryButtonText2}>Back</Text>
+              </Pressable>
+            </View>
             <Text style={styles.trackingTitle}>Bus {ticket?.bus?.busNumber || ticket?.busNumber || 'Ticket'}</Text>
             <Text style={styles.trackingSubtitle}>Updates every 5 seconds from the tracking endpoint.</Text>
-          </View>
-          <View style={styles.trackingHeaderActions}>
-            <Pressable onPress={onClose} style={styles.secondaryButton}>
-              <Text style={styles.secondaryButtonText1}>Back</Text>
-            </Pressable>
           </View>
         </View>
 
@@ -1191,25 +1319,26 @@ function LiveTrackingPanel({ ticket, onClose, trackingUrl }) {
           {busMatches ? (
             <>
               <View style={styles.trackingMapWrap}>
-                {mapUrl ? (
-                  <View style={styles.trackingIframeWrap}>
-                    {Platform.OS === 'web' ? (
+                {locationData ? (
+                  Platform.OS === 'web' ? (
+                    <View style={styles.trackingIframeWrap}>
                       <iframe
                         title="Live bus location map"
                         src={mapUrl}
                         style={styles.trackingIframe}
                         loading="lazy"
                       />
-                    ) : (
-                      <View style={styles.trackingMapFallback}>
-                        <Text style={styles.helperText}>Open this screen on the web build to see the embedded map.</Text>
-                      </View>
-                    )}
-                    <View style={styles.trackingPinWrap}>
-                      <View style={styles.trackingPinDot} />
-                      <View style={styles.trackingPinStem} />
                     </View>
-                  </View>
+                  ) : (
+                    <WebView
+                      source={{ uri: mapUrl }}
+                      style={styles.trackingMapView}
+                      javaScriptEnabled={true}
+                      domStorageEnabled={true}
+                      startInLoadingState={true}
+                      scalesPageToFit={true}
+                    />
+                  )
                 ) : (
                   <View style={styles.trackingMapFallback}>
                     <Text style={styles.helperText}>Waiting for location data...</Text>
@@ -1218,6 +1347,12 @@ function LiveTrackingPanel({ ticket, onClose, trackingUrl }) {
                 <View style={styles.trackingMapOverlay}>
                   <Text style={styles.trackingOverlayLabel}>{locationData?.busNumber || ticket?.bus?.busNumber || 'Live bus'}</Text>
                   <Text style={styles.trackingOverlayValue}>{locationData?.timeStamp || 'Fetching live position...'}</Text>
+                  {userLocation ? (
+                    <View style={styles.userLocationIndicator}>
+                      <View style={styles.userLocationDot} />
+                      <Text style={styles.userLocationText}>Your location</Text>
+                    </View>
+                  ) : null}
                 </View>
               </View>
 
@@ -3812,6 +3947,10 @@ const styles = StyleSheet.create({
     color: '#0F172A',
     fontWeight: '700',
   },
+  secondaryButtonText2: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
   secondaryButtonText1: {
     color: '#ffffff',
     fontWeight: '700',
@@ -4272,12 +4411,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(148, 163, 184, 0.16)',
     gap: 12,
+  },
+  trackingHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  trackingHeaderActions: {
-    alignItems: 'flex-end',
+    alignItems: 'center',
   },
   trackingTitle: {
     color: '#F8FAFC',
@@ -4311,6 +4449,10 @@ const styles = StyleSheet.create({
     border: 0,
     display: 'block',
     backgroundColor: '#E5E7EB',
+  },
+  trackingMapView: {
+    width: '100%',
+    height: 280,
   },
   trackingPinWrap: {
     position: 'absolute',
@@ -4365,6 +4507,25 @@ const styles = StyleSheet.create({
   trackingOverlayValue: {
     color: '#F8FAFC',
     fontWeight: '700',
+  },
+  userLocationIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  userLocationDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10B981',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  userLocationText: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: '600',
   },
   trackingErrorText: {
     color: '#B91C1C',
