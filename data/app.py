@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import time
 
@@ -19,19 +19,41 @@ longLat = [
 
 flag = True
 count = 0
+busNumber = "TN 01 AA 0000"
+
+@app.route('/')
+def health():
+    return jsonify({"status": "ok"})
 
 @app.route('/data')
 def data():
     global count
     count+=1
     return jsonify({
-        "busNumber": "TN 01 AA 0000",
+        "busNumber": busNumber,
         "latitude": longLat[count%9][1],
         "longitude": longLat[count%9][0],
         "timeStamp": time.strftime("%Y-%m-%d %H:%M:%S")
     })
 
+@app.route('/change/bus', methods=['GET','POST'])
+def changeBus():
+    global busNumber
 
+    if request.method == "POST":
+        busNumber = request.form.get("busNumber", busNumber)
+
+    return f"""
+    <html>
+        <body>
+            <h2>Current Name: {busNumber}</h2>
+            <form method="POST">
+                <input type="text" name="busNumber" placeholder="Enter new bus number">
+                <button type="submit">Update</button>
+            </form>
+        </body>
+    </html>
+    """
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
