@@ -903,9 +903,15 @@ function RouteAssistantLauncher({ session }) {
 
   return (
     <>
-      <Pressable style={styles.aiLauncherButton} onPress={() => setOpen(true)}>
-        <Text style={styles.aiLauncherButtonText}>AI</Text>
-      </Pressable>
+      {session ? (
+        <>
+          {(session.user.role === 'user') ? (
+            <Pressable style={styles.aiLauncherButton} onPress={() => setOpen(true)}>
+              <Text style={styles.aiLauncherButtonText}>AI</Text>
+            </Pressable>
+          ) : null}
+        </>
+      ) : null}
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={styles.aiModalBackdrop}>
@@ -1523,10 +1529,10 @@ function AuthScreen({ onAuthed }) {
         {mode === 'login' ? (
           <View style={styles.loginChoiceDock}>
             <Pressable onPress={() => handleLoginChoicePress('user')} style={[styles.loginChoiceButton, selectedLoginChoice === 'user' && styles.loginChoiceButtonActive, selectedLoginChoice === 'admin' && styles.loginChoiceButtonHidden]}>
-              <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'user' && styles.loginChoiceButtonTextActive]}>User login</Text>
+              <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'user' && styles.loginChoiceButtonTextActive]}>Passenger login</Text>
             </Pressable>
             <Pressable onPress={() => handleLoginChoicePress('admin')} style={[styles.loginChoiceButton, selectedLoginChoice === 'admin' && styles.loginChoiceButtonActive, selectedLoginChoice === 'user' && styles.loginChoiceButtonHidden]}>
-              <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'admin' && styles.loginChoiceButtonTextActive]}>Admin login</Text>
+              <Text style={[styles.loginChoiceButtonText, selectedLoginChoice === 'admin' && styles.loginChoiceButtonTextActive]}>Conductor login</Text>
             </Pressable>
           </View>
         ) : (
@@ -1545,7 +1551,7 @@ function AuthScreen({ onAuthed }) {
   );
 }
 
-function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
+function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedBusData, onScannedBusDataHandled }) {
   const [activeTab, setActiveTab] = useState('search');
   const [searchValue, setSearchValue] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1618,6 +1624,13 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
       Alert.alert('Could not load tickets', error.message);
     }
   };
+
+  useEffect(() => {
+    if (scannedBusData) {
+      handleBusScan(scannedBusData, `bus:${scannedBusData.id}`);
+      onScannedBusDataHandled();
+    }
+  }, [scannedBusData]);
 
   const manualSyncTickets = async () => {
     try {
@@ -1848,7 +1861,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
 
     setSelectedBus(bus);
     setScanBookingBusId(null);
-    setSearchResults([]);
+    // Don't clear searchResults to preserve them when going back
+    // setSearchResults([]);
     setPreviewBus(null);
     setBookingForm((current) => ({
       ...current,
@@ -1865,6 +1879,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
     setBookingMode(false);
     setSelectedBus(null);
     setBookingForm(bookingInitialState);
+    // Keep search results and from/to selections to go back to search results page
   };
 
   const closeCategory = () => {
@@ -1956,20 +1971,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
       const embeddedBus = normalizeBusFromQr(parsed?.bus, parsed?.id);
 
       if (embeddedBus) {
-        setSelectedBus(embeddedBus);
-        const busStops = (embeddedBus.stops || []).map((stop) => getStopName(stop)).filter(Boolean);
-        setBookingForm((current) => ({
-          ...current,
-          timingLabel: embeddedBus.timings?.[0]?.label || humanTimeRange(embeddedBus.startTime, embeddedBus.endTime),
-          startStop: busStops[0] || '',
-          endStop: busStops[busStops.length - 1] || '',
-        }));
+        openBusBooking(embeddedBus);
         setSearchValue(embeddedBus.busNumber || '');
-        setScanBookingBusId(embeddedBus._id);
-        setRouteInventory([embeddedBus]);
-        setActiveTab('search');
-        setPreviewBus(null);
-        setSearchResults([]);
         setScannerOpen(false);
         return;
       }
@@ -1980,21 +1983,9 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
         return;
       }
 
-      // Directly open booking flow for scanned bus: populate booking form and stay on the booking screen
-      setSelectedBus(data.bus || null);
-      const busStops = (data.bus.stops || []).map((stop) => getStopName(stop)).filter(Boolean);
-      setBookingForm((current) => ({
-        ...current,
-        timingLabel: data.bus.timings?.[0]?.label || humanTimeRange(data.bus.startTime, data.bus.endTime),
-        startStop: busStops[0] || '',
-        endStop: busStops[busStops.length - 1] || '',
-      }));
+      // Open the existing booking flow so the scanned bus lands on the seat-booking screen.
+      openBusBooking(data.bus || null);
       setSearchValue(data.bus.busNumber || '');
-      setScanBookingBusId(data.bus._id);
-      setRouteInventory([data.bus]);
-      setActiveTab('search');
-      setPreviewBus(null);
-      setSearchResults([]);
       setScannerOpen(false);
     } catch (error) {
       const isUnavailable = /bus not found|not available/i.test(String(error.message || ''));
@@ -2168,7 +2159,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
         onLogout={onLogout}
         onBusQrScanned={handleBusScan}
         menuActions={[
-          { label: 'Search bus', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('search'); } },
+          { label: 'Search bus', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('search'); setBookingMode(false); } },
           { label: 'Ticket', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('ticket'); setSelectedBus(null); } },
           { label: 'Sync tickets', onPress: () => { setShowOnlyCurrentBooked(false); manualSyncTickets(); } },
         ]}
@@ -2432,33 +2423,33 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl }) {
                           <Text style={styles.liveTrackingButtonText}>Live tracking</Text>
                         </Pressable>
                       </View>
+                      {isSelected && selectedTicket ? (
+                        <>
+                          <View style={styles.ticketMetaGrid}>
+                            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Booking</Text><Text style={styles.ticketMetaValue}>#{selectedTicket._id.slice(-8)}</Text></View>
+                            {isOtpVisible ? (
+                              <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{selectedTicket.otp}</Text></View>
+                            ) : (
+                              <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValueSmall}>-</Text></View>
+                            )}
+                            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel1}>Status</Text><Text style={styles.ticketMetaValue}>{selectedTicket.status}</Text></View>
+                            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Timing</Text><Text style={styles.ticketMetaValueSmall}>{ticketTiming || 'n/a'}</Text></View>
+                            <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Validity</Text><Text style={styles.ticketMetaValueSmall}>{ticketValidity}</Text></View>
+                          </View>
+                          <PrimaryButton label="Refresh status" onPress={refreshSelectedTicket} loading={refreshingTicket} />
+                          {selectedTicket.qrDataUrl ? (
+                            <Pressable onPress={() => { setZoomedQrData(selectedTicket.qrDataUrl); setQrZoomOpen(true); }} style={({ pressed }) => pressed && styles.qrImagePressed}>
+                              <Image source={{ uri: selectedTicket.qrDataUrl }} style={styles.ticketQrImage} />
+                              <Text style={styles.helperText}>Tap to zoom</Text>
+                            </Pressable>
+                          ) : null}
+                          <Text style={styles.helperText}>Route: {selectedTicket.startStop} to {selectedTicket.endStop} • Seats: {selectedTicket.seats}</Text>
+                        </>
+                      ) : null}
                     </View>
                   );
                 })}
               </View>
-              {selectedTicket ? (
-                <>
-                  <View style={styles.ticketMetaGrid}>
-                    <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Booking</Text><Text style={styles.ticketMetaValue}>#{selectedTicket._id.slice(-8)}</Text></View>
-                    {isOtpVisible ? (
-                      <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{selectedTicket.otp}</Text></View>
-                    ) : (
-                      <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValueSmall}>-</Text></View>
-                    )}
-                    <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{selectedTicket.status}</Text></View>
-                    <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Timing</Text><Text style={styles.ticketMetaValueSmall}>{ticketTiming || 'n/a'}</Text></View>
-                    <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Validity</Text><Text style={styles.ticketMetaValueSmall}>{ticketValidity}</Text></View>
-                  </View>
-                  <PrimaryButton label="Refresh status" onPress={refreshSelectedTicket} loading={refreshingTicket} />
-                  {selectedTicket.qrDataUrl ? (
-                    <Pressable onPress={() => { setZoomedQrData(selectedTicket.qrDataUrl); setQrZoomOpen(true); }} style={({ pressed }) => pressed && styles.qrImagePressed}>
-                      <Image source={{ uri: selectedTicket.qrDataUrl }} style={styles.ticketQrImage} />
-                      <Text style={styles.helperText}>Tap to zoom</Text>
-                    </Pressable>
-                  ) : null}
-                  <Text style={styles.helperText}>Route: {selectedTicket.startStop} to {selectedTicket.endStop} • Seats: {selectedTicket.seats}</Text>
-                </>
-              ) : null}
             </>
           ) : (
             <>
@@ -2967,11 +2958,9 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                       <Text style={styles.adminBusRouteText}>{routeStops.join(' → ')}</Text>
                     </View>
                     <View style={styles.adminBusQrWrap}>
-                      {bus.qrDataUrl ? (
-                        <Image source={{ uri: bus.qrDataUrl }} style={styles.adminBusQrImage} />
-                      ) : (
-                        <View style={styles.adminBusQrPlaceholder}><Text style={styles.adminBusQrPlaceholderText}>QR</Text></View>
-                      )}
+                      <View style={styles.localQrWrap}>
+                        <SvgQRCode value={`bus:${bus._id}`} size={80} />
+                      </View>
                     </View>
                   </View>
                   <View style={styles.adminBusCardFooter}>
@@ -3055,6 +3044,8 @@ function ConductorDashboard({ session, onLogout }) {
   const [verificationFlash, setVerificationFlash] = useState(null);
   const [qrZoomOpen, setQrZoomOpen] = useState(false);
   const [zoomedQrData, setZoomedQrData] = useState(null);
+  const [verifiedTicket, setVerifiedTicket] = useState(null);
+  const [otpVerify, setOtpVerify] = useState('');
 
   const refreshBuses = async () => {
     try {
@@ -3241,12 +3232,46 @@ function ConductorDashboard({ session, onLogout }) {
                 <Text style={styles.helperText}>Tap to zoom</Text>
               </Pressable>
             </View>
-
-            <View style={{ marginTop: 12, alignItems: 'center' }}>
-              <PrimaryButton label="Open ticket scanner" onPress={() => { setScannerOpen(true); }} style={styles.centerScannerButton} />
-            </View>
+            <View style={styles.paymentDivider} />
           </View>
         )) : <Text style={styles.helperText}>No buses assigned to you.</Text>}
+        <View style={{ marginTop: 12, alignItems: 'center' }}>
+          <PrimaryButton label="Open ticket scanner" onPress={() => { setScannerOpen(true); }} style={styles.centerScannerButton} />
+          <View style={{ width: '100%', marginTop: 12  }}>
+            <Field label="Verify using OTP" value={otpVerify} onChangeText={(v) => setOtpVerify(v)} placeholder="Enter 6-digit OTP" keyboardType="number-pad" />
+            <View style={{ marginTop: 8 }}>
+              <PrimaryButton label="Verify by OTP" onPress={async () => {
+              try {
+                setLoading(true);
+                const data = await requestJson('/bookings/verify', {
+                  method: 'POST',
+                  token: session.token,
+                  body: { otp: otpVerify, clientTime: new Date().toISOString() },
+                });
+
+                setVerifiedTicket(data.booking);
+                setScannerOpen(false);
+                Alert.alert('Ticket verified', 'Ticket verified successfully');
+              } catch (error) {
+                Alert.alert('Verification failed', error.message);
+              } finally {
+                setLoading(false);
+              }
+            }} />
+            </View>
+          </View>
+
+            {verifiedTicket ? (
+              <View style={styles.ticketMetaGrid}>
+                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Ticket</Text><Text style={styles.ticketMetaValue}>#{verifiedTicket._id.slice(-8)}</Text></View>
+                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.status}</Text></View>
+                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.otp}</Text></View>
+                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Route</Text><Text style={styles.ticketMetaValueSmall}>{verifiedTicket.startStop} → {verifiedTicket.endStop}</Text></View>
+              </View>
+            ) : (
+              <Text style={styles.helperText}>Use the scanner to verify an active ticket.</Text>
+            )}
+        </View>
       </Card>
 
       {qrZoomOpen ? (
@@ -3280,6 +3305,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshSignal, setRefreshSignal] = useState(0);
   const [trackingUrl, setTrackingUrl] = useState('');
+  const [scannedBusData, setScannedBusData] = useState(null);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -3334,7 +3360,7 @@ export default function App() {
         <ScrollView contentContainerStyle={styles.screenContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); setRefreshSignal((s) => s + 1); setTimeout(() => setRefreshing(false), 900); }} tintColor="#FFFFFF" />}>
           {!session ? (
             <>
-              <AppHeader />
+              <AppHeader onBusQrScanned={(parsed) => { setScannedBusData(parsed); }} />
               <AuthScreen onAuthed={setSession} />
             </>
           ) : session.user.role === 'admin' ? (
@@ -3342,7 +3368,7 @@ export default function App() {
           ) : session.user.role === 'conductor' ? (
             <ConductorDashboard session={session} onLogout={async () => { await AsyncStorage.removeItem('session'); setSession(null); }} refreshSignal={refreshSignal} />
           ) : (
-            <UserDashboard session={session} onLogout={async () => { await AsyncStorage.removeItem('session'); setSession(null); }} refreshSignal={refreshSignal} trackingUrl={trackingUrl} />
+            <UserDashboard session={session} onLogout={async () => { await AsyncStorage.removeItem('session'); setSession(null); }} refreshSignal={refreshSignal} trackingUrl={trackingUrl} scannedBusData={scannedBusData} onScannedBusDataHandled={() => setScannedBusData(null)} />
           )}
         </ScrollView>
         {session ? <RouteAssistantLauncher session={session} /> : null}
@@ -4021,6 +4047,12 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
+  infoLabel1: {
+    color: '#64748B',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
   infoValue: {
     color: '#0F172A',
     fontWeight: '700',
@@ -4324,10 +4356,12 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   ticketMetaBox: {
-    backgroundColor: '#F1F5F9',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
     minWidth: 140,
     gap: 4,
   },

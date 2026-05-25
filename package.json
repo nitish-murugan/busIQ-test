@@ -23,7 +23,7 @@
     "react-native": "0.83.6",
     "react-native-qrcode-svg": "^6.3.17",
     "react-native-web": "^0.21.0",
-    "react-native-webview": "13.12.5"
+    "react-native-webview": "13.16.1"
   },
   "private": true
 }
