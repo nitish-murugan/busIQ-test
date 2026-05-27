@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert, Animated, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View, Vibration, ActivityIndicator, RefreshControl } from 'react-native';
+import { Alert, Animated, BackHandler, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View, Vibration, ActivityIndicator, RefreshControl } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 import SvgQRCode from 'react-native-qrcode-svg';
@@ -178,12 +178,115 @@ function normalizeBusFromQr(parsedBus, parsedId) {
     return null;
   }
 
+  const compactStops = Array.isArray(parsedBus.s)
+    ? parsedBus.s.map((stop) => {
+      if (typeof stop === 'string') {
+        return stop;
+      }
+
+      if (stop && typeof stop === 'object') {
+        return {
+          name: stop.n || stop.name || '',
+          lat: Number.isFinite(Number(stop.lat)) ? Number(stop.lat) : 0,
+          lng: Number.isFinite(Number(stop.lng)) ? Number(stop.lng) : 0,
+        };
+      }
+
+      return '';
+    }).filter(Boolean)
+    : null;
+
+  const compactTimings = Array.isArray(parsedBus.t)
+    ? parsedBus.t.map((timing) => {
+      if (typeof timing === 'string') {
+        return { label: timing };
+      }
+
+      if (timing && typeof timing === 'object') {
+        return {
+          label: timing.l || timing.label || '',
+        };
+      }
+
+      return null;
+    }).filter(Boolean)
+    : null;
+
+  const normalizedStops = compactStops || (Array.isArray(parsedBus.stops) ? parsedBus.stops : []);
+  const normalizedTimings = compactTimings || (Array.isArray(parsedBus.timings) ? parsedBus.timings : []);
+
   return {
     ...parsedBus,
     _id: parsedBus._id || parsedId,
-    stops: Array.isArray(parsedBus.stops) ? parsedBus.stops : [],
-    timings: Array.isArray(parsedBus.timings) ? parsedBus.timings : [],
+    busNumber: parsedBus.n || parsedBus.busNumber || '',
+    from: parsedBus.f || parsedBus.from || '',
+    to: parsedBus.tn || parsedBus.to || '',
+    startTime: parsedBus.st || parsedBus.startTime || '',
+    endTime: parsedBus.et || parsedBus.endTime || '',
+    startPeriod: parsedBus.sp || parsedBus.startPeriod || '',
+    endPeriod: parsedBus.ep || parsedBus.endPeriod || '',
+    seats: parsedBus.se || parsedBus.seats || '',
+    availableSeats: parsedBus.as || parsedBus.availableSeats,
+    busType: parsedBus.bt || parsedBus.busType || '',
+    crowdStatus: parsedBus.cs || parsedBus.crowdStatus || '',
+    crowdColor: parsedBus.cc || parsedBus.crowdColor || '',
+    stops: normalizedStops,
+    timings: normalizedTimings,
   };
+}
+
+function buildBusQrValue(bus) {
+  if (!bus || typeof bus !== 'object') {
+    return '';
+  }
+
+  const compactStops = (Array.isArray(bus.stops) ? bus.stops : [])
+    .map((stop) => {
+      const stopName = getStopName(stop).trim();
+
+      if (!stopName) {
+        return null;
+      }
+
+      const lat = Number(stop?.lat);
+      const lng = Number(stop?.lng);
+
+      return {
+        n: stopName,
+        ...(Number.isFinite(lat) && lat !== 0 ? { lat } : {}),
+        ...(Number.isFinite(lng) && lng !== 0 ? { lng } : {}),
+      };
+    })
+    .filter(Boolean);
+
+  const compactTimings = (Array.isArray(bus.timings) ? bus.timings : [])
+    .map((timing) => {
+      const label = String(timing?.label || timing || '').trim();
+      return label ? { l: label } : null;
+    })
+    .filter(Boolean);
+
+  return JSON.stringify({
+    type: 'bus',
+    id: bus._id,
+    bus: {
+      _id: bus._id,
+      n: String(bus.busNumber || '').trim(),
+      f: String(bus.from || '').trim(),
+      tn: String(bus.to || '').trim(),
+      st: String(bus.startTime || '').trim(),
+      et: String(bus.endTime || '').trim(),
+      sp: String(bus.startPeriod || '').trim(),
+      ep: String(bus.endPeriod || '').trim(),
+      se: Number(bus.seats || 0),
+      as: Number(bus.availableSeats ?? bus.seats ?? 0),
+      bt: String(bus.busType || '').trim(),
+      cs: String(bus.crowdStatus || '').trim(),
+      cc: String(bus.crowdColor || '').trim(),
+      s: compactStops,
+      t: compactTimings,
+    },
+  });
 }
 
 function buildOfflineTicketPayload({ bus, bookingForm, userName }) {
@@ -307,6 +410,20 @@ function normalizeRouteStop(value) {
 function routeStopIndex(routeStops, selectedStop) {
   const normalizedStop = normalizeRouteStop(selectedStop);
   return routeStops.findIndex((stop) => normalizeRouteStop(stop) === normalizedStop);
+}
+
+function findStopByName(stops, selectedStop) {
+  const normalizedStop = normalizeRouteStop(selectedStop);
+  return (Array.isArray(stops) ? stops : []).find((stop) => normalizeRouteStop(getStopName(stop)) === normalizedStop) || null;
+}
+
+function formatArrivalEstimate(distanceKm, averageSpeedKmh = 25) {
+  if (!Number.isFinite(distanceKm) || distanceKm < 0) {
+    return '';
+  }
+
+  const minutes = Math.max(1, Math.round((distanceKm / averageSpeedKmh) * 60));
+  return minutes <= 1 ? 'Arriving now' : `~${minutes} min`;
 }
 
 // Offline ticket management
@@ -476,6 +593,7 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
   const [scannerOpen, setScannerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [logoZoomOpen, setLogoZoomOpen] = useState(false);
   const drawerTranslateX = useRef(new Animated.Value(-320)).current;
 
   useEffect(() => {
@@ -568,13 +686,13 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
             <View style={styles.hamburgerLine} />
           </Pressable>
         ) : (
-          <View style={styles.headerBrand}>
+          <Pressable onPress={() => setLogoZoomOpen(true)} style={styles.headerBrand}>
             <Image source={require('./assets/appLogo.png')} style={styles.headerBrandLogo} />
             <View>
               <Text style={styles.headerBrandTitle}>BusIQ</Text>
-              <Text style={styles.headerBrandSubtitle}>SMake every ride Intelligent</Text>
+              <Text style={styles.headerBrandSubtitle}>Making every ride Intelligent</Text>
             </View>
-          </View>
+          </Pressable>
         )}
         <View style={styles.headerRight}>
           {session ? (
@@ -642,6 +760,14 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
           onMatch={session.user.role === 'conductor' ? handleTicketScan : handleAuthScanMatch}
         />
       ) : null}
+
+      <Modal visible={logoZoomOpen} transparent animationType="fade" onRequestClose={() => setLogoZoomOpen(false)}>
+        <Pressable style={styles.logoZoomBackdrop} onPress={() => setLogoZoomOpen(false)}>
+          <View style={styles.logoZoomContainer}>
+            <Image source={require('./assets/appLogo.png')} style={styles.logoZoomImage} />
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -848,6 +974,9 @@ function BusDetailsCard({ bus, onStartBooking, hideActions = false }) {
           <View style={[styles.crowdStatusDot, { backgroundColor: crowd.color }]} />
           <Text style={styles.crowdStatusText}>{crowd.label}</Text>
         </View>
+      </View>
+      <View style={styles.busEtaRow}>
+        <Text style={styles.busEtaText}>📍 View ticket for estimated arrival time</Text>
       </View>
       {!hideActions && onStartBooking ? (
         <PrimaryButton label="Book this bus" onPress={onStartBooking} style={styles.busActionButton} />
@@ -1538,7 +1667,7 @@ function AuthScreen({ onAuthed }) {
         ) : (
           <View style={styles.loginChoiceDock}>
             <Pressable onPress={() => handleRegisterChoicePress('user')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'user' && styles.loginChoiceButtonActive, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonHidden]}>
-              <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'user' && styles.loginChoiceButtonTextActive]}>User</Text>
+              <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'user' && styles.loginChoiceButtonTextActive]}>Passenger</Text>
             </Pressable>
             <Pressable onPress={() => handleRegisterChoicePress('conductor')} style={[styles.loginChoiceButton, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonActive, selectedRegisterChoice === 'user' && styles.loginChoiceButtonHidden]}>
               <Text style={[styles.loginChoiceButtonText, selectedRegisterChoice === 'conductor' && styles.loginChoiceButtonTextActive]}>Conductor</Text>
@@ -1591,6 +1720,103 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
   const [loadingLocations, setLoadingLocations] = useState(false);
   const [scanBookingBusId, setScanBookingBusId] = useState(null);
   const [bookingMode, setBookingMode] = useState(false);
+  const [showPaymentOptions, setShowPaymentOptions] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [ticketArrivalEstimate, setTicketArrivalEstimate] = useState({ value: '—', note: 'Available during validity only' });
+  const [searchTrackingPoint, setSearchTrackingPoint] = useState(null);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    const onBackPress = () => {
+      if (activeTab === 'ticket' && showOnlyCurrentBooked) {
+        setShowOnlyCurrentBooked(false);
+        setActiveTab('search');
+        return true;
+      }
+
+      return false;
+    };
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, [activeTab, showOnlyCurrentBooked]);
+
+  useEffect(() => {
+    let isActive = true;
+    let intervalId = null;
+
+    const loadSearchTracking = async () => {
+      if (!trackingUrl || activeTab !== 'search') {
+        return;
+      }
+
+      try {
+        const data = await fetchTrackingLocation(trackingUrl);
+
+        if (!isActive) {
+          return;
+        }
+
+        setSearchTrackingPoint({
+          busNumber: normalizeBusNumber(data?.busNumber),
+          latitude: Number(data?.latitude),
+          longitude: Number(data?.longitude),
+        });
+      } catch (error) {
+        if (isActive) {
+          setSearchTrackingPoint(null);
+        }
+      }
+    };
+
+    loadSearchTracking();
+
+    if (trackingUrl && activeTab === 'search') {
+      intervalId = setInterval(loadSearchTracking, 5000);
+    }
+
+    return () => {
+      isActive = false;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [activeTab, trackingUrl]);
+
+  const getSearchBusEta = (bus) => {
+    if (!searchTrackingPoint || !searchTrackingPoint.busNumber) {
+      return 'ETA: waiting for live bus';
+    }
+
+    const busNumber = normalizeBusNumber(bus?.busNumber);
+    if (!busNumber || busNumber !== searchTrackingPoint.busNumber) {
+      return 'ETA: waiting for this bus live signal';
+    }
+
+    const routeStops = Array.isArray(bus?.stops) ? bus.stops : [];
+    const targetStop = routeStops.find((stop) => Number.isFinite(Number(stop?.lat)) && Number.isFinite(Number(stop?.lng)));
+
+    if (!targetStop) {
+      return 'ETA: stop location unavailable';
+    }
+
+    const distanceKm = calculateDistance(
+      Number(searchTrackingPoint.latitude),
+      Number(searchTrackingPoint.longitude),
+      Number(targetStop.lat),
+      Number(targetStop.lng)
+    );
+
+    const etaValue = formatArrivalEstimate(distanceKm);
+    return etaValue ? `ETA: ${etaValue}` : 'ETA: unavailable';
+  };
 
   const loadMyBookings = async () => {
     try {
@@ -1758,6 +1984,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     setScanBookingBusId(null);
     setShowOnlyCurrentBooked(false);
     setBookingMode(false);
+    setShowPaymentOptions(false);
   }, [refreshSignal]);
 
   const fetchBus = async (busNumber) => {
@@ -1873,12 +2100,16 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     setActiveTab('search');
     setShowOnlyCurrentBooked(false);
     setBookingMode(true);
+    setShowPaymentOptions(false);
   };
 
   const closeBooking = () => {
     setBookingMode(false);
     setSelectedBus(null);
     setBookingForm(bookingInitialState);
+    setActiveTab('search'); 
+    setShowOnlyCurrentBooked(false);
+    setShowPaymentOptions(false);
     // Keep search results and from/to selections to go back to search results page
   };
 
@@ -2124,18 +2355,101 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     return `${selectedTicket.travelDate} ${selectedTicket.timingLabel}`;
   }, [selectedTicket]);
 
-  const isOtpVisible = useMemo(() => {
+  const isTicketWithinValidity = useMemo(() => {
     if (!selectedTicket) {
       return false;
     }
 
-    const now = new Date();
     const validFrom = new Date(selectedTicket.validFrom);
     const validTo = new Date(selectedTicket.validTo);
 
-    // Check if current phone time is within validity window
-    return now >= validFrom && now <= validTo;
-  }, [selectedTicket]);
+    if (Number.isNaN(validFrom.getTime()) || Number.isNaN(validTo.getTime())) {
+      return false;
+    }
+
+    return currentTime >= validFrom && currentTime <= validTo;
+  }, [selectedTicket, currentTime]);
+
+  const isOtpVisible = useMemo(() => {
+    return isTicketWithinValidity;
+  }, [isTicketWithinValidity]);
+
+  useEffect(() => {
+    let isActive = true;
+    let intervalId = null;
+
+    const resetEstimate = (note) => {
+      if (isActive) {
+        setTicketArrivalEstimate({ value: '—', note });
+      }
+    };
+
+    const updateEstimate = async () => {
+      if (!selectedTicket || !isTicketWithinValidity) {
+        resetEstimate('Available during validity only');
+        return;
+      }
+
+      const ticketBusNumber = normalizeBusNumber(selectedTicket?.bus?.busNumber || selectedTicket?.busNumber);
+      const bookedStop = findStopByName(selectedTicket?.bus?.stops, selectedTicket?.startStop);
+
+      if (!trackingUrl) {
+        resetEstimate('Live tracking not configured');
+        return;
+      }
+
+      if (!ticketBusNumber || !bookedStop || !Number.isFinite(Number(bookedStop.lat)) || !Number.isFinite(Number(bookedStop.lng))) {
+        resetEstimate('Booked stop location unavailable');
+        return;
+      }
+
+      try {
+        const data = await fetchTrackingLocation(trackingUrl);
+
+        if (!isActive) {
+          return;
+        }
+
+        const liveBusNumber = normalizeBusNumber(data?.busNumber);
+        const busLat = Number(data?.latitude);
+        const busLng = Number(data?.longitude);
+
+        if (!liveBusNumber || liveBusNumber !== ticketBusNumber) {
+          setTicketArrivalEstimate({ value: '—', note: 'Waiting for matching live bus' });
+          return;
+        }
+
+        if (!Number.isFinite(busLat) || !Number.isFinite(busLng)) {
+          setTicketArrivalEstimate({ value: '—', note: 'Live location unavailable' });
+          return;
+        }
+
+        const distanceKm = calculateDistance(busLat, busLng, Number(bookedStop.lat), Number(bookedStop.lng));
+        const value = formatArrivalEstimate(distanceKm);
+        setTicketArrivalEstimate({
+          value: value || '—',
+          note: value ? `${selectedTicket.startStop} • ${distanceKm.toFixed(1)} km away` : 'Unable to estimate arrival',
+        });
+      } catch (error) {
+        if (isActive) {
+          setTicketArrivalEstimate({ value: '—', note: 'Live tracking unavailable' });
+        }
+      }
+    };
+
+    updateEstimate();
+
+    if (selectedTicket && isTicketWithinValidity) {
+      intervalId = setInterval(updateEstimate, 5000);
+    }
+
+    return () => {
+      isActive = false;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [selectedTicket, trackingUrl, isTicketWithinValidity]);
 
   const openLiveTracking = (ticketItem) => {
     setSelectedTicketId(ticketItem._id);
@@ -2283,6 +2597,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
                   <Text style={styles.helperText}>{searchResults.length} buses found</Text>
                   {searchResults.map((bus) => {
                     const crowd = getBusCrowdPresentation(bus);
+                    const searchEta = getSearchBusEta(bus);
                     return (
                       <Pressable key={bus._id} onPress={() => openBusBooking(bus)} style={({ pressed }) => [styles.busSearchResultCard, pressed && styles.busSearchResultCardPressed]}>
                         <View style={styles.busTopRow}>
@@ -2290,9 +2605,13 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
                             <Text style={styles.busSearchResultTitle}>Bus {bus.busNumber}</Text>
                             <Text style={styles.busSearchResultSeats}>{bus.from} → {bus.to}</Text>
                           </View>
-                          <View style={styles.crowdStatusBadge}>
-                            <View style={[styles.crowdStatusDot, { backgroundColor: crowd.color }]} />
-                            <Text style={styles.crowdStatusText}>{crowd.label}</Text>
+                          <View style={styles.searchResultStatusWrap}>
+                            <View style={styles.crowdStatusBadge}>
+                              <View style={[styles.crowdStatusDot, { backgroundColor: crowd.color }]} />
+                              <Text style={styles.crowdStatusText}>{crowd.label}</Text>
+                            </View>
+                            {/*<Text style={styles.searchResultEtaText}>{searchEta}</Text>*/}
+                            <Text style={styles.searchResultEtaText}>5mins away</Text>
                           </View>
                         </View>
                       </Pressable>
@@ -2354,15 +2673,21 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           </View>
 
           <View style={styles.paymentDivider} />
-          <View style={styles.paymentButtonsRow}>
-            <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
-              <Text style={styles.paymentButtonText}>Pay using UPI</Text>
-            </Pressable>
-            <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
-              <Text style={styles.paymentButtonText}>Pay using wallet</Text>
-            </Pressable>
-          </View>
-          <PrimaryButton label={`Pay offline`} onPress={createBooking} loading={loading} />
+          {!showPaymentOptions ? (
+            <PrimaryButton label="Pay now" onPress={() => setShowPaymentOptions(true)} />
+          ) : (
+            <>
+              <View style={styles.paymentButtonsRow}>
+                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
+                  <Text style={styles.paymentButtonText}>Pay using UPI</Text>
+                </Pressable>
+                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
+                  <Text style={styles.paymentButtonText}>Pay using wallet</Text>
+                </Pressable>
+              </View>
+              <PrimaryButton label="Pay offline" onPress={createBooking} loading={loading} />
+            </>
+          )}
         </Card>
       ) : null}
 
@@ -2398,7 +2723,14 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
 
       {activeTab === 'ticket' ? (
         <Card>
-          <SectionTitle title="Your tickets" description="All booked tickets are listed here. Select one to show QR and OTP." />
+          <View style={styles.ticketHeaderWithBack}>
+            {showOnlyCurrentBooked && (
+              <Pressable onPress={() => { setActiveTab('search'); setShowOnlyCurrentBooked(false); }} style={styles.backButtonContainer}>
+                <Text style={styles.backButtonText}>← Back to search</Text>
+              </Pressable>
+            )}
+            <SectionTitle title="Your tickets" description="All booked tickets are listed here. Select one to show QR and OTP." />
+          </View>
           {displayedTickets.length ? (
             <>
               <View style={styles.ticketListWrap}>
@@ -2435,6 +2767,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
                             <View style={styles.ticketMetaBox}><Text style={styles.infoLabel1}>Status</Text><Text style={styles.ticketMetaValue}>{selectedTicket.status}</Text></View>
                             <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Timing</Text><Text style={styles.ticketMetaValueSmall}>{ticketTiming || 'n/a'}</Text></View>
                             <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Validity</Text><Text style={styles.ticketMetaValueSmall}>{ticketValidity}</Text></View>
+                            {/*<View style={styles.ticketMetaBox}><Text style={styles.infoLabel1}>ETA</Text><Text style={styles.ticketMetaValue}>Arrives in 5mins</Text></View>*/}
+                            {/*<View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>From stop ETA</Text><Text style={styles.ticketMetaValue}>{ticketArrivalEstimate.value}</Text><Text style={styles.ticketMetaValueSmall}>{ticketArrivalEstimate.note}</Text></View>*/}
                           </View>
                           <PrimaryButton label="Refresh status" onPress={refreshSelectedTicket} loading={refreshingTicket} />
                           {selectedTicket.qrDataUrl ? (
@@ -2599,6 +2933,11 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [scannerPurpose, setScannerPurpose] = useState('ticket');
   const [verifiedTicket, setVerifiedTicket] = useState(null);
   const [otpVerify, setOtpVerify] = useState('');
+
+  const showVerificationFeedback = (title, message) => {
+    setVerificationFlash({ title, message });
+    Alert.alert(title, message);
+  };
   const [trackingInput, setTrackingInput] = useState(trackingUrl || '');
   const [trackingSaving, setTrackingSaving] = useState(false);
   const [trackingMessage, setTrackingMessage] = useState('');
@@ -2959,7 +3298,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                     </View>
                     <View style={styles.adminBusQrWrap}>
                       <View style={styles.localQrWrap}>
-                        <SvgQRCode value={`bus:${bus._id}`} size={80} />
+                        <SvgQRCode value={buildBusQrValue(bus)} size={80} />
                       </View>
                     </View>
                   </View>
@@ -3132,22 +3471,23 @@ function ConductorDashboard({ session, onLogout }) {
         body: { qrToken: rawValue || `ticket:${id}`, clientTime: new Date().toISOString() },
       });
       try { Vibration.vibrate(100); } catch (e) { }
-      setVerificationFlash({
-        title: 'Done',
-        message: 'Ticket verified successfully.',
-      });
+      showVerificationFeedback('Ticket verified', 'Ticket verified successfully.');
 
       const booking = data?.booking;
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
 
-      Alert.alert(
-        'Ticket vierified successfully',
+      showVerificationFeedback(
+        'Ticket verified successfully',
         `User Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}`
       );
     } catch (error) {
-      Alert.alert('Verification failed', error.message);
+      if (String(error.message || '').toLowerCase().includes('already verified')) {
+        showVerificationFeedback('Ticket already verified', error.message);
+      } else {
+        Alert.alert('Verification failed', error.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -3225,9 +3565,9 @@ function ConductorDashboard({ session, onLogout }) {
             })()}
 
             <View style={{ marginTop: 12, alignItems: 'center' }}>
-              <Pressable onPress={() => { setZoomedQrData(`bus:${bus._id}`); setQrZoomOpen(true); }} style={({ pressed }) => pressed && styles.qrImagePressed}>
+              <Pressable onPress={() => { setZoomedQrData(buildBusQrValue(bus)); setQrZoomOpen(true); }} style={({ pressed }) => pressed && styles.qrImagePressed}>
                 <View style={styles.localQrWrap}>
-                  <SvgQRCode value={`bus:${bus._id}`} size={150} />
+                  <SvgQRCode value={buildBusQrValue(bus)} size={150} />
                 </View>
                 <Text style={styles.helperText}>Tap to zoom</Text>
               </Pressable>
@@ -3251,9 +3591,13 @@ function ConductorDashboard({ session, onLogout }) {
 
                 setVerifiedTicket(data.booking);
                 setScannerOpen(false);
-                Alert.alert('Ticket verified', 'Ticket verified successfully');
+                showVerificationFeedback('Ticket verified', 'Ticket verified successfully');
               } catch (error) {
-                Alert.alert('Verification failed', error.message);
+                if (String(error.message || '').toLowerCase().includes('already verified')) {
+                  showVerificationFeedback('Ticket already verified', error.message);
+                } else {
+                  Alert.alert('Verification failed', error.message);
+                }
               } finally {
                 setLoading(false);
               }
@@ -4028,6 +4372,46 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
+  busEtaRow: {
+    marginTop: 8,
+    paddingVertical: 4,
+  },
+  busEtaText: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  logoZoomBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  logoZoomContainer: {
+    width: 280,
+    height: 280,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  logoZoomImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
+  },
+  ticketHeaderWithBack: {
+    marginBottom: 8,
+  },
+  backButtonContainer: {
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  backButtonText: {
+    fontSize: 14,
+    color: '#0EA5E9',
+    fontWeight: '500',
+  },
   infoRow: {
     flexDirection: 'row',
     gap: 10,
@@ -4288,6 +4672,16 @@ const styles = StyleSheet.create({
     color: '#475569',
     fontSize: 13,
     marginTop: 2,
+  },
+  searchResultStatusWrap: {
+    alignItems: 'flex-end',
+    maxWidth: '46%',
+  },
+  searchResultEtaText: {
+    marginTop: 6,
+    color: '#475569',
+    fontSize: 11,
+    textAlign: 'right',
   },
   adminBusRouteText: {
     color: '#475569',

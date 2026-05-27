@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "sh -c './data/myenv/bin/python data/app.py & node backend/server.js & expo start'",
+    "start": "expo start",
     "backend": "node backend/server.js",
     "tracker": "./data/myenv/bin/python data/app.py",
     "android": "expo start --android",
