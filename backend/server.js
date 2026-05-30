@@ -1449,10 +1449,11 @@ app.post('/api/bookings/sync-offline', authRequired, async (req, res) => {
       seats,
       otp,
       qrToken,
-      status: now >= validFrom ? 'verified' : 'pending',
+      // Do NOT auto-verify on sync. Conductor must explicitly verify the ticket.
+      status: 'pending',
       validFrom,
       validTo,
-      verifiedAt: now >= validFrom ? now : null,
+      verifiedAt: null,
       offlineMode: true,
       offlineRef: ticketId,
       offlinePayload: ticket,
