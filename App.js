@@ -1688,6 +1688,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
   const [previewBus, setPreviewBus] = useState(null);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [bookingForm, setBookingForm] = useState(bookingInitialState);
+  const [scannedStopPickerOpen, setScannedStopPickerOpen] = useState(false);
+  const [scannedStopSelection, setScannedStopSelection] = useState({ from: '', to: '' });
   const [stopPickerOpen, setStopPickerOpen] = useState(false);
   const [stopPickerType, setStopPickerType] = useState(null);
   const [tickets, setTickets] = useState([]);
@@ -1725,6 +1727,17 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
   const [ticketArrivalEstimate, setTicketArrivalEstimate] = useState({ value: '—', note: 'Available during validity only' });
   const [searchTrackingPoint, setSearchTrackingPoint] = useState(null);
   const [paidStatus, setPaidStatus] = useState(false);
+
+  const scannedRouteStops = useMemo(() => getBusRouteStops(previewBus), [previewBus]);
+  const scannedFromIndex = routeStopIndex(scannedRouteStops, scannedStopSelection.from);
+  const scannedToIndex = routeStopIndex(scannedRouteStops, scannedStopSelection.to);
+  const canContinueScannedBooking = Boolean(
+    previewBus
+    && scannedStopSelection.from
+    && scannedStopSelection.to
+    && scannedFromIndex >= 0
+    && scannedToIndex > scannedFromIndex
+  );
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -1965,6 +1978,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     setSearchValue('');
     setSelectedBus(null);
     setPreviewBus(null);
+    setScannedStopPickerOpen(false);
+    setScannedStopSelection({ from: '', to: '' });
     setScannerOpen(false);
     setBookingForm(bookingInitialState);
     setStopPickerOpen(false);
@@ -2084,11 +2099,30 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     }
 
     const routeStops = getBusRouteStops(bus);
-    const startStop = String(fromSelection || routeStops[0] || '').trim();
-    const endStop = String(toSelection || routeStops[routeStops.length - 1] || '').trim();
+    const requestedStartStop = String(fromSelection || routeStops[0] || '').trim();
+    const requestedEndStop = String(toSelection || routeStops[routeStops.length - 1] || '').trim();
+    let startStop = requestedStartStop;
+    let endStop = requestedEndStop;
+
+    if (routeStopIndex(routeStops, startStop) < 0) {
+      startStop = String(routeStops[0] || '').trim();
+    }
+
+    if (routeStopIndex(routeStops, endStop) < 0) {
+      endStop = String(routeStops[routeStops.length - 1] || '').trim();
+    }
+
+    const startIndex = routeStopIndex(routeStops, startStop);
+    const endIndex = routeStopIndex(routeStops, endStop);
+    if (startIndex >= 0 && (endIndex < 0 || endIndex <= startIndex)) {
+      const fallbackEnd = routeStops[Math.min(routeStops.length - 1, startIndex + 1)] || routeStops[routeStops.length - 1] || '';
+      endStop = String(fallbackEnd).trim();
+    }
 
     setSelectedBus(bus);
     setScanBookingBusId(null);
+    setScannedStopPickerOpen(false);
+    setScannedStopSelection({ from: '', to: '' });
     // Don't clear searchResults to preserve them when going back
     // setSearchResults([]);
     setPreviewBus(null);
@@ -2097,6 +2131,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
       timingLabel: bus.timings?.[0]?.label || humanTimeRange(bus.startTime, bus.endTime),
       startStop,
       endStop,
+      seats: current.seats || '1',
     }));
     setActiveTab('search');
     setShowOnlyCurrentBooked(false);
@@ -2104,10 +2139,108 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     setShowPaymentOptions(false);
   };
 
+  const openBusBookingWithStops = (bus, fromStop, toStop) => {
+    if (!bus) {
+      return;
+    }
+
+    const routeStops = getBusRouteStops(bus);
+    const normalizedFrom = String(fromStop || routeStops[0] || '').trim();
+    const normalizedTo = String(toStop || routeStops[routeStops.length - 1] || '').trim();
+    const fromIdx = routeStopIndex(routeStops, normalizedFrom);
+    const toIdx = routeStopIndex(routeStops, normalizedTo);
+
+    if (fromIdx === -1 || toIdx === -1 || toIdx <= fromIdx) {
+      Alert.alert('Invalid route', 'Select valid stops in route order.');
+      return;
+    }
+
+    setFromSelection(normalizedFrom);
+    setToSelection(normalizedTo);
+    setScannedStopPickerOpen(false);
+    setScannedStopSelection({ from: '', to: '' });
+    setPreviewBus(null);
+    setSelectedBus(bus);
+    setScanBookingBusId(null);
+    setBookingForm((current) => ({
+      ...current,
+      timingLabel: bus.timings?.[0]?.label || humanTimeRange(bus.startTime, bus.endTime),
+      startStop: normalizedFrom,
+      endStop: normalizedTo,
+      seats: '1',
+    }));
+    setActiveTab('search');
+    setShowOnlyCurrentBooked(false);
+    setBookingMode(true);
+    setShowPaymentOptions(false);
+  };
+
+  const closeScannedStopPicker = () => {
+    setScannedStopPickerOpen(false);
+    setScannedStopSelection({ from: '', to: '' });
+    setPreviewBus(null);
+    setScanBookingBusId(null);
+  };
+
+  const handleScannedStopPress = (stopName) => {
+    setScannedStopSelection((current) => {
+      const selectedStop = String(stopName || '').trim();
+      if (!selectedStop) {
+        return current;
+      }
+
+      if (!current.from || current.to) {
+        return { from: selectedStop, to: '' };
+      }
+
+      const fromIdx = routeStopIndex(scannedRouteStops, current.from);
+      const toIdx = routeStopIndex(scannedRouteStops, selectedStop);
+
+      if (toIdx <= fromIdx) {
+        Alert.alert('Choose destination', 'Second tap must be a stop after the selected start stop.');
+        return current;
+      }
+
+      return { ...current, to: selectedStop };
+    });
+  };
+
+  const openScannedBusStopSelector = (bus) => {
+    if (!bus) {
+      return;
+    }
+
+    const routeStops = getBusRouteStops(bus);
+    if (routeStops.length < 2) {
+      Alert.alert('Bus unavailable', 'This bus does not have enough route stops for booking.');
+      return;
+    }
+
+    const initialFrom = String(fromSelection || routeStops[0] || '').trim();
+    let initialTo = String(toSelection || routeStops[routeStops.length - 1] || '').trim();
+    const fromIdx = routeStopIndex(routeStops, initialFrom);
+    const toIdx = routeStopIndex(routeStops, initialTo);
+    if (fromIdx >= 0 && (toIdx < 0 || toIdx <= fromIdx)) {
+      initialTo = String(routeStops[Math.min(routeStops.length - 1, fromIdx + 1)] || routeStops[routeStops.length - 1] || '').trim();
+    }
+
+    setPreviewBus(bus);
+    setSelectedBus(null);
+    setBookingMode(false);
+    setShowPaymentOptions(false);
+    setScanBookingBusId(bus._id || bus.id || null);
+    setScannedStopSelection({ from: initialFrom, to: initialTo });
+    setScannedStopPickerOpen(true);
+    setScannerOpen(false);
+  };
+
   const closeBooking = () => {
     setBookingMode(false);
     setSelectedBus(null);
     setBookingForm(bookingInitialState);
+    setScannedStopPickerOpen(false);
+    setScannedStopSelection({ from: '', to: '' });
+    setPreviewBus(null);
     setActiveTab('search'); 
     setShowOnlyCurrentBooked(false);
     setShowPaymentOptions(false);
@@ -2203,7 +2336,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
       const embeddedBus = normalizeBusFromQr(parsed?.bus, parsed?.id);
 
       if (embeddedBus) {
-        openBusBooking(embeddedBus);
+        openScannedBusStopSelector(embeddedBus);
         setSearchValue(embeddedBus.busNumber || '');
         setScannerOpen(false);
         return;
@@ -2215,8 +2348,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
         return;
       }
 
-      // Open the existing booking flow so the scanned bus lands on the seat-booking screen.
-      openBusBooking(data.bus || null);
+      openScannedBusStopSelector(data.bus || null);
       setSearchValue(data.bus.busNumber || '');
       setScannerOpen(false);
     } catch (error) {
@@ -2227,7 +2359,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     }
   };
 
-  const createBooking = async () => {
+  const createBooking = async (paidStatusOverride = null) => {
     try {
       if (!selectedBus) {
         Alert.alert('Missing details', 'Please search or scan a bus before booking.');
@@ -2313,7 +2445,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           startStop,
           endStop,
           seats,
-          paidStatus,
+          paidStatus: paidStatusOverride !== null ? paidStatusOverride : paidStatus,
         },
       });
 
@@ -2329,12 +2461,10 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     }
   };
 
-  pressedPayButton = async (mode) => {
-    if(mode=="upi" || mode=="wallet"){
-      setPaidStatus(true);
-    }
-    setPaidStatus(false);
-    createBooking();
+  const pressedPayButton = async (mode) => {
+    const isPaid = mode === "upi" || mode === "wallet";
+    setPaidStatus(isPaid);
+    createBooking(isPaid);
   }
 
   const selectedTicket = useMemo(() => {
@@ -2491,6 +2621,71 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
 
       {activeTab === 'search' ? (
         <>
+          <Modal visible={scannedStopPickerOpen} animationType="slide" onRequestClose={closeScannedStopPicker}>
+            <ScrollView contentContainerStyle={styles.scrollContent}>
+              <Card>
+                <View style={styles.scannedStopsHeaderRow}>
+                  <Pressable onPress={closeScannedStopPicker} style={styles.secondaryAction}>
+                    <Text style={styles.secondaryActionText}>Back</Text>
+                  </Pressable>
+                  <View style={{ flex: 1, marginHorizontal: 12 }}>
+                    <Text style={styles.scannedStopsBusTitle}>Bus {previewBus?.busNumber || ''}</Text>
+                    <Text style={styles.scannedStopsBusSubtitle}>{previewBus?.from || ''} → {previewBus?.to || ''}</Text>
+                  </View>
+                </View>
+
+                <SectionTitle title="Choose stops" description="Tap once for From stop and tap again for To stop." />
+
+                <View style={styles.scannedStopsSelectionBar}>
+                  <Text style={styles.scannedStopsSelectionText}>From: {scannedStopSelection.from || 'Tap a stop'}</Text>
+                  <Text style={styles.scannedStopsSelectionText}>To: {scannedStopSelection.to || 'Tap a stop after From'}</Text>
+                </View>
+
+                <View style={styles.scannedStopsTimelineWrap}>
+                  {scannedRouteStops.map((stopName, index) => {
+                    const isFrom = scannedStopSelection.from === stopName;
+                    const isTo = scannedStopSelection.to === stopName;
+                    const isInRange = scannedFromIndex >= 0 && scannedToIndex > scannedFromIndex && index >= scannedFromIndex && index <= scannedToIndex;
+
+                    return (
+                      <Pressable
+                        key={`scan-stop-${index}-${stopName}`}
+                        style={({ pressed }) => [styles.scannedStopRow, pressed && styles.scannedStopRowPressed]}
+                        onPress={() => handleScannedStopPress(stopName)}
+                      >
+                        <View style={styles.scannedStopRailColumn}>
+                          {index !== scannedRouteStops.length - 1 ? (
+                            <View style={[styles.scannedStopRailLine, isInRange && styles.scannedStopRailLineActive]} />
+                          ) : null}
+                          <View style={[styles.scannedStopDot, (isFrom || isTo) && styles.scannedStopDotActive]} />
+                        </View>
+                        <View style={styles.scannedStopTextWrap}>
+                          <Text style={styles.scannedStopName}>{stopName}</Text>
+                          {isFrom ? <Text style={styles.scannedStopTag}>From stop</Text> : null}
+                          {isTo ? <Text style={styles.scannedStopTag}>To stop</Text> : null}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.rowButtons}>
+                  <Pressable
+                    style={({ pressed }) => [styles.secondaryAction, pressed && styles.secondaryActionPressed]}
+                    onPress={() => setScannedStopSelection({ from: '', to: '' })}
+                  >
+                    <Text style={styles.secondaryActionText}>Reset selection</Text>
+                  </Pressable>
+                  <PrimaryButton
+                    label="Continue to seat booking"
+                    onPress={() => openBusBookingWithStops(previewBus, scannedStopSelection.from, scannedStopSelection.to)}
+                    style={styles.flexButton}
+                  />
+                </View>
+              </Card>
+            </ScrollView>
+          </Modal>
+
           <Modal visible={locationPickerOpen} animationType="slide" onRequestClose={closeLocationPicker}>
             <ScrollView contentContainerStyle={styles.scrollContent}>
               <View style={{ padding: 16 }}>
@@ -2695,7 +2890,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
                   <Text style={styles.paymentButtonText}>Pay using wallet</Text>
                 </Pressable>
               </View>
-              <PrimaryButton label="Pay offline" onPress={pressedPayButton("offline")} loading={loading} />
+              <PrimaryButton label="Pay offline" onPress={() => pressedPayButton("offline")} loading={loading} />
             </>
           )}
         </Card>
@@ -3279,7 +3474,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
               } finally {
                 setLoading(false);
               }
-            }} />
+            }} loading={loading} />
 
             {verifiedTicket ? (
               <View style={styles.ticketMetaGrid}>
@@ -3507,10 +3702,11 @@ function ConductorDashboard({ session, onLogout }) {
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
+      const paidStatus = booking?.paidStatus==false?"Not paid":"{Paid}";
 
       showVerificationFeedback(
         'Ticket verified successfully',
-        `User Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}`
+        `User Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}\nPaid Status: ${paidStatus}`
       );
     } catch (error) {
       if (String(error.message || '').toLowerCase().includes('already verified')) {
@@ -3621,7 +3817,11 @@ function ConductorDashboard({ session, onLogout }) {
 
                 setVerifiedTicket(data.booking);
                 setScannerOpen(false);
-                showVerificationFeedback('Ticket verified', 'Ticket verified successfully');
+                const passengerName = data?.booking?.user?.name || data?.booking?.offlinePayload?.userName || 'N/A';
+                const fromStop = data?.booking?.startStop || 'N/A';
+                const toStop = data?.booking?.endStop || 'N/A';
+                const paidStatus = data?.booking?.paidStatus==false?"Not paid":"Paid";
+                showVerificationFeedback('Ticket verified', `Ticket verified successfully\nUser Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}\nPaid Status: ${paidStatus}`);
               } catch (error) {
                 if (String(error.message || '').toLowerCase().includes('already verified')) {
                   showVerificationFeedback('Ticket already verified', error.message);
@@ -3631,7 +3831,7 @@ function ConductorDashboard({ session, onLogout }) {
               } finally {
                 setLoading(false);
               }
-            }} />
+            }} loading={loading} />
             </View>
           </View>
 
@@ -4692,6 +4892,93 @@ const styles = StyleSheet.create({
   busSearchResultCard: {
     paddingVertical: 12,
     paddingHorizontal: 14,
+  },
+  scannedStopsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  scannedStopsBusTitle: {
+    color: '#0F172A',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  scannedStopsBusSubtitle: {
+    color: '#64748B',
+    marginTop: 2,
+  },
+  scannedStopsSelectionBar: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4,
+  },
+  scannedStopsSelectionText: {
+    color: '#0F172A',
+    fontWeight: '700',
+  },
+  scannedStopsTimelineWrap: {
+    marginTop: 4,
+    gap: 2,
+  },
+  scannedStopRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 2,
+  },
+  scannedStopRowPressed: {
+    backgroundColor: '#F1F5F9',
+  },
+  scannedStopRailColumn: {
+    width: 28,
+    alignItems: 'center',
+    position: 'relative',
+  },
+  scannedStopRailLine: {
+    position: 'absolute',
+    top: 18,
+    width: 2,
+    bottom: -12,
+    backgroundColor: '#94A3B8',
+  },
+  scannedStopRailLineActive: {
+    backgroundColor: '#0F172A',
+  },
+  scannedStopDot: {
+    marginTop: 6,
+    width: 12,
+    height: 12,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: '#0F172A',
+    backgroundColor: '#FFFFFF',
+  },
+  scannedStopDotActive: {
+    backgroundColor: '#0F172A',
+  },
+  scannedStopTextWrap: {
+    flex: 1,
+    gap: 4,
+    paddingBottom: 10,
+  },
+  scannedStopName: {
+    color: '#1E293B',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  scannedStopTag: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#DCFCE7',
+    color: '#166534',
+    fontWeight: '800',
+    fontSize: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
   },
   busSearchResultTitle: {
     color: '#0F172A',
