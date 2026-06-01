@@ -1724,6 +1724,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [ticketArrivalEstimate, setTicketArrivalEstimate] = useState({ value: '—', note: 'Available during validity only' });
   const [searchTrackingPoint, setSearchTrackingPoint] = useState(null);
+  const [paidStatus, setPaidStatus] = useState(false);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -2312,6 +2313,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           startStop,
           endStop,
           seats,
+          paidStatus,
         },
       });
 
@@ -2326,6 +2328,14 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
       setLoading(false);
     }
   };
+
+  pressedPayButton = async (mode) => {
+    if(mode=="upi" || mode=="wallet"){
+      setPaidStatus(true);
+    }
+    setPaidStatus(false);
+    createBooking();
+  }
 
   const selectedTicket = useMemo(() => {
     if (!tickets.length) {
@@ -2678,14 +2688,14 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           ) : (
             <>
               <View style={styles.paymentButtonsRow}>
-                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
+                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("upi")}}>
                   <Text style={styles.paymentButtonText}>Pay using UPI</Text>
                 </Pressable>
-                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {}}>
+                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("wallet")}}>
                   <Text style={styles.paymentButtonText}>Pay using wallet</Text>
                 </Pressable>
               </View>
-              <PrimaryButton label="Pay offline" onPress={createBooking} loading={loading} />
+              <PrimaryButton label="Pay offline" onPress={pressedPayButton("offline")} loading={loading} />
             </>
           )}
         </Card>
@@ -2932,12 +2942,22 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scannerPurpose, setScannerPurpose] = useState('ticket');
   const [verifiedTicket, setVerifiedTicket] = useState(null);
+  const [verificationFlash, setVerificationFlash] = useState(null);
   const [otpVerify, setOtpVerify] = useState('');
 
   const showVerificationFeedback = (title, message) => {
     setVerificationFlash({ title, message });
     Alert.alert(title, message);
   };
+
+  useEffect(() => {
+    if (!verificationFlash) {
+      return undefined;
+    }
+
+    const timer = setTimeout(() => setVerificationFlash(null), 1500);
+    return () => clearTimeout(timer);
+  }, [verificationFlash]);
   const [trackingInput, setTrackingInput] = useState(trackingUrl || '');
   const [trackingSaving, setTrackingSaving] = useState(false);
   const [trackingMessage, setTrackingMessage] = useState('');
@@ -3234,6 +3254,12 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       {activeTab === 'verify' ? (
         <Card>
           <SectionTitle title="Verify ticket" description="Scan a passenger QR and confirm that the booking is still within the selected route window." />
+          {verificationFlash ? (
+            <View style={styles.doneBanner}>
+              <Text style={styles.doneBannerTitle}>{verificationFlash.title}</Text>
+              <Text style={styles.doneBannerText}>{verificationFlash.message}</Text>
+            </View>
+          ) : null}
           <View style={{ gap: 12 }}>
             <Field label="OTP" value={otpVerify} onChangeText={(v) => setOtpVerify(v)} placeholder="Enter 6-digit OTP" keyboardType="number-pad" />
             <PrimaryButton label="Verify by OTP" onPress={async () => {
@@ -3386,6 +3412,11 @@ function ConductorDashboard({ session, onLogout }) {
   const [verifiedTicket, setVerifiedTicket] = useState(null);
   const [otpVerify, setOtpVerify] = useState('');
 
+  const showVerificationFeedback = (title, message) => {
+    setVerificationFlash({ title, message });
+    Alert.alert(title, message);
+  };
+
   const refreshBuses = async () => {
     try {
       setLoading(true);
@@ -3471,7 +3502,6 @@ function ConductorDashboard({ session, onLogout }) {
         body: { qrToken: rawValue || `ticket:${id}`, clientTime: new Date().toISOString() },
       });
       try { Vibration.vibrate(100); } catch (e) { }
-      showVerificationFeedback('Ticket verified', 'Ticket verified successfully.');
 
       const booking = data?.booking;
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';

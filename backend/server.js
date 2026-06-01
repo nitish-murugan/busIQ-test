@@ -102,6 +102,7 @@ const bookingSchema = new mongoose.Schema(
     offlineMode: { type: Boolean, default: false },
     offlineRef: { type: String, unique: true, sparse: true },
     offlinePayload: { type: mongoose.Schema.Types.Mixed },
+    paidStatus: {type: Boolean, default: false},
   },
   { timestamps: true }
 );
@@ -118,6 +119,27 @@ const User = mongoose.model('User', userSchema);
 const Bus = mongoose.model('Bus', busSchema);
 const Booking = mongoose.model('Booking', bookingSchema);
 const AppConfig = mongoose.model('AppConfig', appConfigSchema);
+
+async function clearExpiredConductorAssignments() {
+  const now = new Date();
+  await Bus.updateMany(
+    {
+      conductor: { $exists: true, $ne: null },
+      conductorAssignmentExpiresAt: { $lt: now },
+    },
+    { $unset: { conductor: 1, conductorAssignmentExpiresAt: 1 } }
+  );
+}
+
+async function findBusAssignedToConductor(conductorId, excludeBusId = null) {
+  const filter = { conductor: conductorId };
+
+  if (excludeBusId) {
+    filter._id = { $ne: excludeBusId };
+  }
+
+  return Bus.findOne(filter).populate('conductor', 'name email role');
+}
 
 async function ensureDefaultAdmin() {
   const normalizedEmail = defaultAdminEmail.trim().toLowerCase();
@@ -947,6 +969,16 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
       return res.status(409).json({ message: 'Bus number already exists' });
     }
 
+    if (conductorId) {
+      await clearExpiredConductorAssignments();
+      const assignedBus = await findBusAssignedToConductor(conductorId);
+      if (assignedBus) {
+        return res.status(409).json({
+          message: `This conductor is already assigned to bus ${assignedBus.busNumber}`,
+        });
+      }
+    }
+
     // If frontend provides AM/PM dropdowns (`startPeriod`/`endPeriod`), include them in stored labels.
     const sp = startPeriod ? String(startPeriod).trim().toUpperCase() : '';
     const ep = endPeriod ? String(endPeriod).trim().toUpperCase() : '';
@@ -1042,6 +1074,14 @@ app.post('/api/buses/:id/assign-conductor', authRequired, adminOnly, async (req,
     const bus = await Bus.findById(req.params.id);
     if (!bus) return res.status(404).json({ message: 'Bus not found' });
 
+    await clearExpiredConductorAssignments();
+    const assignedBus = await findBusAssignedToConductor(conductorId, bus._id);
+    if (assignedBus) {
+      return res.status(409).json({
+        message: `This conductor is already assigned to bus ${assignedBus.busNumber}`,
+      });
+    }
+
     // Set expiration to end of current day (23:59:59.999)
     const now = new Date();
     const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
@@ -1113,7 +1153,7 @@ app.post('/api/buses/:id/visibility', authRequired, conductorOrAdmin, async (req
 
 app.post('/api/bookings', authRequired, async (req, res) => {
   try {
-    const { busId, travelDate, timingLabel, startStop, endStop, seats } = req.body || {};
+    const { busId, travelDate, timingLabel, startStop, endStop, seats, paidStatus } = req.body || {};
 
     if (!busId || !travelDate || !timingLabel || !startStop || !endStop || !seats) {
       return res.status(400).json({ message: 'Bus, travel date, timing, stops, and seats are required' });
@@ -1167,6 +1207,7 @@ app.post('/api/bookings', authRequired, async (req, res) => {
       status: 'pending',
       validFrom,
       validTo,
+      paidStatus: paidStatus,
     });
 
     const populatedBooking = await Booking.findById(booking._id)
