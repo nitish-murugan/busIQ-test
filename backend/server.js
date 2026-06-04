@@ -1023,6 +1023,96 @@ app.post('/api/buses', authRequired, adminOnly, async (req, res) => {
   }
 });
 
+app.put('/api/buses/:id', authRequired, adminOnly, async (req, res) => {
+  try {
+    const { busNumber, seats, startTime, endTime, startPeriod, endPeriod, daily, from, to, stops, busType, conductorId } = req.body || {};
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) return res.status(404).json({ message: 'Bus not found' });
+
+    if (!busNumber || !seats || !startTime || !endTime || !from || !to) {
+      return res.status(400).json({ message: 'Bus number, seats, timings, from, and to are required' });
+    }
+
+    const cleanStops = Array.isArray(stops) ? stops.map((stop) => {
+      if (typeof stop === 'string') {
+        return { name: String(stop).trim(), lat: 0, lng: 0 };
+      }
+      if (typeof stop === 'object' && stop !== null) {
+        return {
+          name: String(stop.name || '').trim(),
+          lat: typeof stop.lat === 'number' ? stop.lat : 0,
+          lng: typeof stop.lng === 'number' ? stop.lng : 0,
+        };
+      }
+      return null;
+    }).filter((stop) => stop && stop.name) : [];
+
+    if (cleanStops.length < 2) {
+      return res.status(400).json({ message: 'At least 2 stops are required' });
+    }
+
+    const existingBus = await Bus.findOne({ busNumber: busNumber.trim(), _id: { $ne: bus._id } });
+    if (existingBus) {
+      return res.status(409).json({ message: 'Bus number already exists' });
+    }
+
+    if (conductorId) {
+      await clearExpiredConductorAssignments();
+      const assignedBus = await findBusAssignedToConductor(conductorId, bus._id);
+      if (assignedBus) {
+        return res.status(409).json({ message: `This conductor is already assigned to bus ${assignedBus.busNumber}` });
+      }
+    }
+
+    const sp = startPeriod ? String(startPeriod).trim().toUpperCase() : '';
+    const ep = endPeriod ? String(endPeriod).trim().toUpperCase() : '';
+    const startLabel = sp ? `${startTime} ${sp}` : String(startTime);
+    const endLabel = ep ? `${endTime} ${ep}` : String(endTime);
+
+    bus.busNumber = busNumber.trim();
+    bus.seats = Number(seats);
+    bus.startTime = startLabel;
+    bus.endTime = endLabel;
+    bus.daily = Boolean(daily);
+    bus.busType = busType || 'Local';
+    bus.from = from.trim();
+    bus.to = to.trim();
+    bus.stops = cleanStops;
+    bus.conductor = conductorId || undefined;
+    bus.timings = [
+      {
+        label: `${startLabel} - ${endLabel}`,
+        startTime: startLabel,
+        endTime: endLabel,
+      },
+    ];
+
+    await bus.save();
+
+    const qrDataUrl = await buildBusQrDataUrl(bus);
+    return res.json({
+      bus: {
+        ...bus.toObject(),
+        qrDataUrl,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.delete('/api/buses/:id', authRequired, adminOnly, async (req, res) => {
+  try {
+    const bus = await Bus.findById(req.params.id);
+    if (!bus) return res.status(404).json({ message: 'Bus not found' });
+
+    await Bus.deleteOne({ _id: bus._id });
+    return res.json({ message: 'Bus deleted' });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 // List users (admin only) - optional filter by role
 app.get('/api/users', authRequired, adminOnly, async (req, res) => {
   try {
