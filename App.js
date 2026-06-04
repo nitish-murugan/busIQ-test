@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert, Animated, BackHandler, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View, Vibration, ActivityIndicator, RefreshControl } from 'react-native';
+import { Alert, Animated, BackHandler, Image, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, View, Vibration, ActivityIndicator, RefreshControl, Dimensions } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import Constants from 'expo-constants';
 import SvgQRCode from 'react-native-qrcode-svg';
@@ -8,6 +8,52 @@ import * as Location from 'expo-location';
 import { WebView } from 'react-native-webview';
 
 // npx eas-cli@latest build -p android --profile preview
+
+// eas build --platform android --profile production
+// eas update --branch production --message "Your update message"
+
+
+/*
+Step-by-step OTA Updates Setup (from scratch):
+
+1. Install EAS CLI:
+
+bash
+npm install -g eas-cli
+eas login
+2. Configure EAS for your project:
+
+bash
+eas build:configure
+This adds EAS configuration to your project.
+
+3. Build your first APK (production):
+
+bash
+eas build --platform android --profile production
+This creates your production APK
+Install this APK on your device
+This is your base app that will receive OTA updates
+4. Make code changes:
+
+Edit your code (App.js, etc.)
+Test locally with expo start
+5. Publish OTA update:
+
+bash
+eas update --branch production --message "Your update message"
+6. Users get update:
+
+Open the app (or restart)
+Changes appear automatically
+Important Notes:
+
+First APK build is required (one-time)
+After that, only OTA updates needed
+OTA updates work for JavaScript/assets only
+Native changes (camera, location) need new APK
+Your app.json already has OTA configured, so you can skip the configuration steps and go directly to building your first APK, then use eas update for subsequent changes.
+*/
 
 function extractHost(value) {
   if (!value || typeof value !== 'string') {
@@ -2878,21 +2924,21 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           </View>
 
           <View style={styles.paymentDivider} />
-          {!showPaymentOptions ? (
-            <PrimaryButton label="Pay now" onPress={() => setShowPaymentOptions(true)} />
-          ) : (
-            <>
-              <View style={styles.paymentButtonsRow}>
+          <View style={styles.paymentButtonsContainer}>
+            {!showPaymentOptions ? (
+              <PrimaryButton label="Pay now" onPress={() => setShowPaymentOptions(true)} />
+            ) : (
+              <View style={styles.paymentButtonsVertical}>
                 <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("upi")}}>
                   <Text style={styles.paymentButtonText}>Pay using UPI</Text>
                 </Pressable>
                 <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("wallet")}}>
                   <Text style={styles.paymentButtonText}>Pay using wallet</Text>
                 </Pressable>
+                <PrimaryButton label="Pay offline" onPress={() => pressedPayButton("offline")} loading={loading} />
               </View>
-              <PrimaryButton label="Pay offline" onPress={() => pressedPayButton("offline")} loading={loading} />
-            </>
-          )}
+            )}
+          </View>
         </Card>
       ) : null}
 
@@ -3139,10 +3185,43 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [verifiedTicket, setVerifiedTicket] = useState(null);
   const [verificationFlash, setVerificationFlash] = useState(null);
   const [otpVerify, setOtpVerify] = useState('');
+  const [menuOpenBusId, setMenuOpenBusId] = useState(null);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const [refreshing, setRefreshing] = useState(false);
+  const scrollViewRef = useRef(null);
 
   const showVerificationFeedback = (title, message) => {
     setVerificationFlash({ title, message });
     Alert.alert(title, message);
+  };
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    // Reset to add-new mode (stop editing)
+    setForm({
+      busNumber: '',
+      seats: '40',
+      startTime: '08:00',
+      endTime: '12:00',
+      startPeriod: 'AM',
+      endPeriod: 'PM',
+      daily: true,
+      busType: 'Local',
+      from: '',
+      to: '',
+      stops: [
+        { name: '', lat: 0, lng: 0 },
+        { name: '', lat: 0, lng: 0 },
+      ],
+      conductorId: '',
+    });
+    setSavedBus(null);
+    setActiveTab('add');
+    // reload buses as well
+    refreshBuses().finally(() => {
+      setRefreshing(false);
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    });
   };
 
   useEffect(() => {
@@ -3218,8 +3297,70 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
     }
   };
 
+  const editBus = (bus) => {
+    setForm({
+      busNumber: bus.busNumber,
+      seats: String(bus.seats),
+      startTime: bus.startTime,
+      endTime: bus.endTime,
+      startPeriod: bus.startPeriod,
+      endPeriod: bus.endPeriod,
+      daily: bus.daily,
+      busType: bus.busType,
+      from: bus.from,
+      to: bus.to,
+      stops: bus.stops || [{ name: '', lat: 0, lng: 0 }, { name: '', lat: 0, lng: 0 }],
+      conductorId: bus.conductorId || '',
+    });
+    setSavedBus(bus);
+    setActiveTab('add');
+    setMenuOpenBusId(null);
+    // Scroll to top with multiple attempts to ensure it works
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 100);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 200);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 250);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 300);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 350);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+    }, 400);
+
+  };
+
+  const deleteBus = async (busId) => {
+    try {
+      setLoading(true);
+      await requestJson(`/buses/${busId}`, { method: 'DELETE', token: session.token });
+      refreshBuses();
+      setMenuOpenBusId(null);
+      Alert.alert('Deleted', 'Bus deleted successfully');
+    } catch (err) {
+      Alert.alert('Delete failed', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const addStop = () => {
     setForm((current) => ({ ...current, stops: [...current.stops, { name: '', lat: 0, lng: 0 }] }));
+  };
+
+  const removeStop = (index) => {
+    setForm((current) => {
+      const nextStops = [...current.stops];
+      if (index >= 0 && index < nextStops.length) nextStops.splice(index, 1);
+      return { ...current, stops: nextStops };
+    });
   };
 
   const updateStop = (index, updates) => {
@@ -3250,8 +3391,12 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           lng: typeof stop.lng === 'number' ? stop.lng : 0,
         }));
 
-      const data = await requestJson('/buses', {
-        method: 'POST',
+      const isEditing = savedBus && savedBus._id;
+      const url = isEditing ? `/buses/${savedBus._id}` : '/buses';
+      const method = isEditing ? 'PUT' : 'POST';
+
+      const data = await requestJson(url, {
+        method,
         token: session.token,
         body: {
           busNumber: form.busNumber.trim(),
@@ -3270,8 +3415,18 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       });
 
       setSavedBus(data.bus);
-      setBusList((current) => [data.bus, ...current.filter((bus) => bus._id !== data.bus._id)]);
-      Alert.alert('Bus saved', 'QR generated for the newly created bus.');
+      if (isEditing) {
+        setBusList((current) => current.map((bus) => bus._id === data.bus._id ? data.bus : bus));
+        Alert.alert('Bus updated', 'Bus details updated successfully.');
+        // Reset to add new bus page after update
+        setForm(busInitialState);
+        setSavedBus(null);
+        setActiveTab('add');
+        scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+      } else {
+        setBusList((current) => [data.bus, ...current.filter((bus) => bus._id !== data.bus._id)]);
+        Alert.alert('Bus saved', 'QR generated for the newly created bus.');
+      }
     } catch (error) {
       Alert.alert('Save failed', error.message);
     } finally {
@@ -3355,12 +3510,33 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.scrollContent}>
+    <ScrollView contentContainerStyle={styles.scrollContent} ref={scrollViewRef} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
       <AppHeader
         session={session}
         onLogout={onLogout}
         menuActions={[
-          { label: 'Add bus', onPress: () => setActiveTab('add') },
+          { label: 'Add bus', onPress: () => {
+            setForm({
+              busNumber: '',
+              seats: '40',
+              startTime: '08:00',
+              endTime: '12:00',
+              startPeriod: 'AM',
+              endPeriod: 'PM',
+              daily: true,
+              busType: 'Local',
+              from: '',
+              to: '',
+              stops: [
+                { name: '', lat: 0, lng: 0 },
+                { name: '', lat: 0, lng: 0 },
+              ],
+              conductorId: '',
+            });
+            setSavedBus(null);
+            setActiveTab('add');
+            scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+          } },
           { label: 'Verify ticket', onPress: () => setActiveTab('verify') },
           { label: 'Scan bus', onPress: () => { setScannerPurpose('bus'); setScannerOpen(true); } },
           { label: 'Set live tracking', onPress: () => setTrackingModalOpen(true) },
@@ -3433,6 +3609,16 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                       : '0, 0'}
                   </Text>
                 </View>
+                {savedBus && (stop.lat !== 0 || stop.lng !== 0) && (
+                  <Pressable style={styles.clearLocationButton} onPress={() => updateStop(index, { lat: 0, lng: 0 })}>
+                    <Text style={styles.clearLocationButtonText}>Clear</Text>
+                  </Pressable>
+                )}
+                {savedBus && (
+                  <Pressable style={styles.removeStopButton} onPress={() => removeStop(index)}>
+                    <Text style={styles.removeStopButtonText}>Remove</Text>
+                  </Pressable>
+                )}
               </View>
             </View>
           ))}
@@ -3524,9 +3710,30 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                     </View>
                   </View>
                   <View style={styles.adminBusCardFooter}>
-                    <Pressable style={styles.secondaryAction} onPress={() => openAssignModal(bus)}>
-                      <Text style={styles.secondaryActionText}>Assign conductor</Text>
-                    </Pressable>
+                    {
+                    bus.conductor ? (null) : (
+                      <Pressable style={styles.secondaryAction} onPress={() => openAssignModal(bus)}>
+                        <Text style={styles.secondaryActionText}>Assign conductor</Text>
+                      </Pressable>
+                    )
+                    }
+                    
+                    <View style={{ flex: 1 }} />
+                    
+                    <View style={{ position: 'relative' }}>
+                      <Pressable
+                        style={styles.kebabButton}
+                        onPress={(e) => {
+                          const { pageX, pageY } = e.nativeEvent;
+                          setMenuPosition({ x: pageX, y: pageY });
+                          setMenuOpenBusId(menuOpenBusId === bus._id ? null : bus._id);
+                        }}
+                      >
+                        <View style={styles.kebabDot} />
+                        <View style={styles.kebabDot} />
+                        <View style={styles.kebabDot} />
+                      </Pressable>
+                    </View>
                   </View>
                 </Card>
               );
@@ -3534,6 +3741,28 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           ) : <Text style={styles.helperText}>No buses saved yet.</Text>}
         </View>
       </Card>
+
+      <Modal visible={menuOpenBusId !== null} transparent animationType="fade" onRequestClose={() => setMenuOpenBusId(null)}>
+        <Pressable style={styles.kebabMenuBackdrop} onPress={() => setMenuOpenBusId(null)} />
+        {menuOpenBusId && (() => {
+          const bus = busList.find(b => b._id === menuOpenBusId);
+          if (!bus) return null;
+          const windowSize = Dimensions.get('window');
+          const menuWidth = 160;
+          const left = Math.max(8, Math.min(menuPosition.x - menuWidth / 2, windowSize.width - menuWidth - 8));
+          const top = Math.max(8, menuPosition.y);
+          return (
+            <View style={[styles.kebabMenuModal, { position: 'absolute', left, top, width: menuWidth }] }>
+              <Pressable style={styles.kebabMenuItem} onPress={() => { editBus(bus); setMenuOpenBusId(null); }}>
+                <Text style={styles.kebabMenuItemText}>Edit</Text>
+              </Pressable>
+              <Pressable style={styles.kebabMenuItem} onPress={() => { deleteBus(bus._id); setMenuOpenBusId(null); }}>
+                <Text style={[styles.kebabMenuItemText, styles.kebabMenuItemTextDanger]}>Delete</Text>
+              </Pressable>
+            </View>
+          );
+        })()}
+      </Modal>
 
       <Modal visible={trackingModalOpen} animationType="slide" onRequestClose={() => setTrackingModalOpen(false)}>
         <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -4192,6 +4421,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.08,
     shadowRadius: 18,
     elevation: 4,
+    overflow: 'visible',
   },
   authCard: {
     marginTop: 6,
@@ -5036,6 +5266,69 @@ const styles = StyleSheet.create({
   adminBusCardFooter: {
     marginTop: 12,
     alignItems: 'flex-end',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  kebabButton: {
+    padding: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kebabDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#64748B',
+    marginVertical: 2,
+  },
+  kebabMenu: {
+    position: 'absolute',
+    right: 0,
+    top: 40,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 10,
+    minWidth: 100,
+    zIndex: 99999,
+  },
+  kebabMenuModal: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 10,
+    minWidth: 200,
+    padding: 8,
+  },
+  kebabMenuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  kebabMenuItem: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  kebabMenuItemText: {
+    color: '#0F172A',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  kebabMenuItemTextDanger: {
+    color: '#EF4444',
   },
   splitRow: {
     flexDirection: 'row',
@@ -5322,6 +5615,29 @@ const styles = StyleSheet.create({
     gap: 10,
     alignItems: 'center',
   },
+  clearLocationButton: {
+    backgroundColor: '#EF4444',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  clearLocationButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  removeStopButton: {
+    backgroundColor: '#F97316',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  removeStopButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 12,
+  },
   getLocationButton: {
     backgroundColor: '#0F172A',
     paddingHorizontal: 16,
@@ -5576,6 +5892,13 @@ const styles = StyleSheet.create({
     gap: 12,
     marginTop: 8,
     marginBottom: 8,
+  },
+  paymentButtonsContainer: {
+    marginTop: 16,
+  },
+  paymentButtonsVertical: {
+    flexDirection: 'column',
+    gap: 12,
   },
   paymentButton: {
     flex: 1,
