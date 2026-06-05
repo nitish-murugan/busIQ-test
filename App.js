@@ -624,6 +624,186 @@ function buildMapEmbedUrl(latitude, longitude, userLat, userLng) {
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
+function buildSimpleMapUrl(latitude, longitude) {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+
+  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    return null;
+  }
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    var map = L.map('map').setView([${lat}, ${lng}], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+  </script>
+</body>
+</html>`;
+
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+const LIVE_MAP_CIRCLE_RADIUS = Math.round(Math.min(Dimensions.get('window').width, Dimensions.get('window').height) * 0.39);
+
+function getBusesWithCurrentLocation(buses) {
+  return (buses || []).filter((bus) => {
+    const lat = Number(bus?.currentLocation?.lat);
+    const lng = Number(bus?.currentLocation?.lng);
+    return Number.isFinite(lat) && lat !== 0 && Number.isFinite(lng) && lng !== 0;
+  });
+}
+
+function buildLiveBusesMapUrl(latitude, longitude, buses, circleRadiusPx = LIVE_MAP_CIRCLE_RADIUS) {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+
+  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    return null;
+  }
+
+  const busesData = getBusesWithCurrentLocation(buses).map((bus) => ({
+    id: String(bus._id),
+    busNumber: String(bus.busNumber || ''),
+    lat: Number(bus.currentLocation.lat),
+    lng: Number(bus.currentLocation.lng),
+  }));
+
+  const busesJson = JSON.stringify(busesData);
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script>
+    var CIRCLE_RADIUS_PX = ${Number(circleRadiusPx)};
+    var allBuses = ${busesJson};
+    var markers = {};
+    var map = L.map('map', { zoomControl: false }).setView([${lat}, ${lng}], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    function haversineMeters(lat1, lng1, lat2, lng2) {
+      var R = 6371000;
+      var dLat = (lat2 - lat1) * Math.PI / 180;
+      var dLng = (lng2 - lng1) * Math.PI / 180;
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    function getSearchRadiusMeters() {
+      var mapSize = map.getSize();
+      var centerPt = mapSize.divideBy(2);
+      var edgePt = L.point(centerPt.x + CIRCLE_RADIUS_PX, centerPt.y);
+      return map.distance(
+        map.containerPointToLatLng(centerPt),
+        map.containerPointToLatLng(edgePt)
+      );
+    }
+
+    function createBusIcon(busNumber) {
+      return L.divIcon({
+        className: 'live-bus-marker',
+        html: '<div style="display:flex;align-items:center;gap:4px;background:#1565C0;color:#fff;font-size:11px;font-weight:700;padding:4px 8px 4px 6px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.28);white-space:nowrap;border:2px solid #fff;"><span style="font-size:12px;line-height:1;">🚌</span><span>' + busNumber + '</span></div>',
+        iconSize: [0, 0],
+        iconAnchor: [0, 16],
+      });
+    }
+
+    function postToApp(payload) {
+      var serialized = JSON.stringify(payload);
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(serialized);
+      }
+    }
+
+    function updateMarkers() {
+      var center = map.getCenter();
+      var radiusM = getSearchRadiusMeters();
+      var visible = [];
+
+      Object.keys(markers).forEach(function(id) {
+        map.removeLayer(markers[id]);
+      });
+      markers = {};
+
+      allBuses.forEach(function(bus) {
+        var dist = haversineMeters(center.lat, center.lng, bus.lat, bus.lng);
+        if (dist <= radiusM) {
+          var marker = L.marker([bus.lat, bus.lng], { icon: createBusIcon(bus.busNumber) }).addTo(map);
+          marker.on('click', function() {
+            postToApp({ type: 'busTapped', busId: bus.id });
+          });
+          markers[bus.id] = marker;
+          visible.push(bus);
+        }
+      });
+
+      postToApp({
+        type: 'visibleBuses',
+        buses: visible,
+        center: { lat: center.lat, lng: center.lng },
+        radiusM: radiusM,
+      });
+    }
+
+    function handleRNMessage(event) {
+      try {
+        var data = JSON.parse(event.data);
+        if (data.type === 'updateBuses' && Array.isArray(data.buses)) {
+          allBuses = data.buses;
+          updateMarkers();
+        }
+        if (data.type === 'recenter' && data.lat && data.lng) {
+          map.setView([data.lat, data.lng], map.getZoom() || 15);
+          updateMarkers();
+        }
+      } catch (error) {}
+    }
+
+    document.addEventListener('message', handleRNMessage);
+    window.addEventListener('message', handleRNMessage);
+
+    map.on('move', updateMarkers);
+    map.on('moveend', updateMarkers);
+    map.on('zoomend', updateMarkers);
+    map.whenReady(updateMarkers);
+  </script>
+</body>
+</html>`;
+
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -690,10 +870,12 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
+      const createdAt = booking?.createdAt || 'N/A';
+      const ticketID = booking?._id || 'N/A';
 
       Alert.alert(
-        'Ticket vierified successfully',
-        `User Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}`
+        'Ticket verified successfully',
+        `Ticket ID: ${ticketID}\nFrom: ${fromStop}\nTo: ${toStop}\nFare: ₹20.0\nPaid Status: ${paidStatus}\nTimestamp: ${createdAt}`
       );
     } catch (error) {
       // If verification failed (already verified / outside window / not found), show alert
@@ -1773,8 +1955,166 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
   const [ticketArrivalEstimate, setTicketArrivalEstimate] = useState({ value: '—', note: 'Available during validity only' });
   const [searchTrackingPoint, setSearchTrackingPoint] = useState(null);
   const [paidStatus, setPaidStatus] = useState(false);
+  const [userLocation, setUserLocation] = useState(null);
+  const [mapUrl, setMapUrl] = useState(null);
+  const [liveMapUrl, setLiveMapUrl] = useState(null);
+  const [liveMapBuses, setLiveMapBuses] = useState([]);
+  const [nearbyBuses, setNearbyBuses] = useState([]);
+  const [locating, setLocating] = useState(false);
+  const [mapModalOpen, setMapModalOpen] = useState(false);
+  const [locationFetched, setLocationFetched] = useState(false);
+  const liveMapWebViewRef = useRef(null);
 
   const scannedRouteStops = useMemo(() => getBusRouteStops(previewBus), [previewBus]);
+
+  const getCurrentLocation = async () => {
+    try {
+      setLocating(true);
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission denied', 'Location permission is required to show your current location.');
+        return;
+      }
+      const location = await Location.getCurrentPositionAsync({});
+      const { latitude, longitude } = location.coords;
+      setUserLocation({ latitude, longitude });
+      setMapUrl(buildSimpleMapUrl(latitude, longitude));
+      setLocationFetched(true);
+    } catch (error) {
+      Alert.alert('Location error', 'Unable to get your current location.');
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  useEffect(() => {
+    getCurrentLocation();
+  }, []);
+
+  const fetchLiveMapBuses = async () => {
+    try {
+      const data = await requestJson('/buses', { token: session.token });
+      const buses = (data.buses || []).filter((bus) => bus.isVisible !== false);
+      setLiveMapBuses(buses);
+      return buses;
+    } catch (error) {
+      console.log('Failed to load live map buses', error);
+      return liveMapBuses;
+    }
+  };
+
+  const refreshLiveMap = async (location = userLocation) => {
+    const buses = await fetchLiveMapBuses();
+    if (location?.latitude && location?.longitude) {
+      setLiveMapUrl(buildLiveBusesMapUrl(location.latitude, location.longitude, buses));
+    }
+    return buses;
+  };
+
+  const pushBusesToLiveMap = (buses) => {
+    const payload = getBusesWithCurrentLocation(buses).map((bus) => ({
+      id: String(bus._id),
+      busNumber: String(bus.busNumber || ''),
+      lat: Number(bus.currentLocation.lat),
+      lng: Number(bus.currentLocation.lng),
+    }));
+
+    liveMapWebViewRef.current?.postMessage(JSON.stringify({ type: 'updateBuses', buses: payload }));
+  };
+
+  const handleMapPress = async () => {
+    setNearbyBuses([]);
+
+    let location = userLocation;
+    if (!locationFetched || !location) {
+      try {
+        setLocating(true);
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission denied', 'Location permission is required to show buses around you.');
+          return;
+        }
+        const current = await Location.getCurrentPositionAsync({});
+        location = { latitude: current.coords.latitude, longitude: current.coords.longitude };
+        setUserLocation(location);
+        setMapUrl(buildSimpleMapUrl(location.latitude, location.longitude));
+        setLocationFetched(true);
+      } catch (error) {
+        Alert.alert('Location error', 'Unable to get your current location.');
+        return;
+      } finally {
+        setLocating(false);
+      }
+    }
+
+    if (!location) {
+      return;
+    }
+
+    setMapModalOpen(true);
+    await refreshLiveMap(location);
+  };
+
+  const closeMapModal = () => {
+    setMapModalOpen(false);
+    setNearbyBuses([]);
+  };
+
+  const recenterLiveMap = () => {
+    if (!userLocation) {
+      getCurrentLocation();
+      return;
+    }
+
+    liveMapWebViewRef.current?.postMessage(JSON.stringify({
+      type: 'recenter',
+      lat: userLocation.latitude,
+      lng: userLocation.longitude,
+    }));
+  };
+
+  const handleLiveMapMessage = (event) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'visibleBuses') {
+        const visible = (data.buses || [])
+          .map((entry) => liveMapBuses.find((bus) => String(bus._id) === entry.id))
+          .filter(Boolean);
+        setNearbyBuses(visible);
+        return;
+      }
+
+      if (data.type === 'busTapped') {
+        const bus = liveMapBuses.find((item) => String(item._id) === data.busId);
+        if (bus) {
+          closeMapModal();
+          openScannedBusStopSelector(bus);
+        }
+      }
+    } catch (error) {
+      console.log('Live map message error', error);
+    }
+  };
+
+  useEffect(() => {
+    if (!mapModalOpen) {
+      return undefined;
+    }
+
+    const intervalId = setInterval(() => {
+      fetchLiveMapBuses();
+    }, 8000);
+
+    return () => clearInterval(intervalId);
+  }, [mapModalOpen, session.token]);
+
+  useEffect(() => {
+    if (!mapModalOpen || !liveMapBuses.length) {
+      return;
+    }
+
+    pushBusesToLiveMap(liveMapBuses);
+  }, [liveMapBuses, mapModalOpen]);
   const scannedFromIndex = routeStopIndex(scannedRouteStops, scannedStopSelection.from);
   const scannedToIndex = routeStopIndex(scannedRouteStops, scannedStopSelection.to);
   const canContinueScannedBooking = Boolean(
@@ -2879,6 +3219,117 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
               ) : null}
             </Card>
           ) : null}
+
+          {!bookingMode && (
+            <Card>
+              <SectionTitle title="Buses around you" description="Tap the map to search buses near any location." />
+              <Pressable onPress={handleMapPress} style={styles.liveMapPreview}>
+                {mapUrl ? (
+                  <WebView
+                    source={{ uri: mapUrl }}
+                    style={styles.liveMapPreviewWebView}
+                    scrollEnabled={false}
+                    pointerEvents="none"
+                  />
+                ) : (
+                  <View style={styles.liveMapPreviewFallback}>
+                    {locating ? (
+                      <ActivityIndicator size="large" color="#0EA5E9" />
+                    ) : (
+                      <>
+                        <Text style={styles.liveMapPreviewTitle}>Loading location...</Text>
+                        <Text style={styles.liveMapPreviewSubtitle}>Please wait while we get your location</Text>
+                      </>
+                    )}
+                  </View>
+                )}
+                <View style={styles.liveMapPreviewHint} pointerEvents="none">
+                  <Text style={styles.liveMapPreviewHintText}>Tap to open live map</Text>
+                </View>
+              </Pressable>
+            </Card>
+          )}
+
+          <Modal visible={mapModalOpen} animationType="slide" onRequestClose={closeMapModal}>
+            <View style={styles.liveMapModalScreen}>
+              <View style={styles.liveMapModalHeader}>
+                <Pressable onPress={closeMapModal} style={styles.liveMapBackButton}>
+                  <Text style={styles.liveMapBackButtonText}>←</Text>
+                </Pressable>
+                <Text style={styles.liveMapModalTitle}>Live map</Text>
+                <View style={styles.liveMapHeaderSpacer} />
+              </View>
+
+              <View style={styles.liveMapStage}>
+                {liveMapUrl ? (
+                  <WebView
+                    ref={liveMapWebViewRef}
+                    source={{ uri: liveMapUrl }}
+                    style={styles.liveMapWebView}
+                    javaScriptEnabled
+                    domStorageEnabled
+                    onMessage={handleLiveMapMessage}
+                    startInLoadingState
+                  />
+                ) : (
+                  <View style={styles.liveMapPreviewFallback}>
+                    {locating ? (
+                      <ActivityIndicator size="large" color="#0EA5E9" />
+                    ) : (
+                      <>
+                        <Text style={styles.liveMapPreviewTitle}>Loading map...</Text>
+                        <Text style={styles.liveMapPreviewSubtitle}>Fetching your location and nearby buses</Text>
+                      </>
+                    )}
+                  </View>
+                )}
+
+                <View style={styles.liveMapCircleOverlay} pointerEvents="none">
+                  <View
+                    style={[
+                      styles.liveMapCircle,
+                      {
+                        width: LIVE_MAP_CIRCLE_RADIUS * 2,
+                        height: LIVE_MAP_CIRCLE_RADIUS * 2,
+                        borderRadius: LIVE_MAP_CIRCLE_RADIUS,
+                      },
+                    ]}
+                  />
+                  <View style={styles.liveMapCenterPinOuter}>
+                    <View style={styles.liveMapCenterPinInner} />
+                  </View>
+                </View>
+
+                <Pressable onPress={recenterLiveMap} style={styles.liveMapLocateButton}>
+                  <Text style={styles.liveMapLocateButtonText}>⌖</Text>
+                </Pressable>
+
+                {nearbyBuses.length ? (
+                  <View style={styles.liveMapNearbyPanel}>
+                    <Text style={styles.liveMapNearbyTitle}>{nearbyBuses.length} bus{nearbyBuses.length === 1 ? '' : 'es'} in this area</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.liveMapNearbyList}>
+                      {nearbyBuses.map((bus) => (
+                        <Pressable
+                          key={bus._id}
+                          onPress={() => {
+                            closeMapModal();
+                            openBusBooking(bus);
+                          }}
+                          style={({ pressed }) => [styles.liveMapNearbyChip, pressed && styles.liveMapNearbyChipPressed]}
+                        >
+                          <Text style={styles.liveMapNearbyChipText}>🚌 {bus.busNumber}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : liveMapUrl ? (
+                  <View style={styles.liveMapNearbyPanel}>
+                    <Text style={styles.liveMapNearbyEmpty}>Move the map to search buses in this area</Text>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          </Modal>
         </>
       ) : null}
 
@@ -2926,7 +3377,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           <View style={styles.paymentDivider} />
           <View style={styles.paymentButtonsContainer}>
             {!showPaymentOptions ? (
-              <PrimaryButton label="Pay now" onPress={() => setShowPaymentOptions(true)} />
+              <PrimaryButton label="Pay Rs.40 now" onPress={() => setShowPaymentOptions(true)} />
             ) : (
               <View style={styles.paymentButtonsVertical}>
                 <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("upi")}}>
@@ -3454,10 +3905,12 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
+      const createdAt = booking?.createdAt || 'N/A';
+      const ticketID = booking?._id || 'N/A';
 
       Alert.alert(
-        'Ticket vierified successfully',
-        `User Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}`
+        'Ticket verified successfully',
+        `Ticket ID: ${ticketID}\nFrom: ${fromStop}\nTo: ${toStop}\nFare: ₹20.0\nPaid Status: ${paidStatus}\nTimestamp: ${createdAt}`
       );
     } catch (error) {
       // If verification failed (already verified / outside window / not found), show alert
@@ -3835,6 +4288,7 @@ function ConductorDashboard({ session, onLogout }) {
   const [zoomedQrData, setZoomedQrData] = useState(null);
   const [verifiedTicket, setVerifiedTicket] = useState(null);
   const [otpVerify, setOtpVerify] = useState('');
+  const locationDeleteTimers = useRef({});
 
   const showVerificationFeedback = (title, message) => {
     setVerificationFlash({ title, message });
@@ -3932,10 +4386,12 @@ function ConductorDashboard({ session, onLogout }) {
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
       const paidStatus = booking?.paidStatus==false?"Not paid":"{Paid}";
+      const createdAt = booking?.createdAt || 'N/A';
+      const ticketID = booking?._id || 'N/A';
 
       showVerificationFeedback(
         'Ticket verified successfully',
-        `User Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}\nPaid Status: ${paidStatus}`
+        `Ticket ID: ${ticketID}\nFrom: ${fromStop}\nTo: ${toStop}\nFare: ₹20.0\nPaid Status: ${paidStatus}\nTimestamp: ${createdAt}`
       );
     } catch (error) {
       if (String(error.message || '').toLowerCase().includes('already verified')) {
@@ -3948,9 +4404,66 @@ function ConductorDashboard({ session, onLogout }) {
     }
   };
 
+  const assignCurrentLocationToBus = async () => {
+    if (!buses.length) {
+      Alert.alert('No buses assigned', 'You have no assigned buses to update location.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const coords = await getStopLocation();
+      if (!coords) {
+        setLoading(false);
+        return;
+      }
+
+      // Assign location to all assigned buses
+      for (const bus of buses) {
+        await requestJson(`/buses/${bus._id}/location`, {
+          method: 'POST',
+          token: session.token,
+          body: { lat: coords.lat, lng: coords.lng }
+        });
+
+        // Clear any existing timer for this bus
+        if (locationDeleteTimers.current[bus._id]) {
+          clearTimeout(locationDeleteTimers.current[bus._id]);
+        }
+
+        // Set timer to delete location after 1 hour
+        locationDeleteTimers.current[bus._id] = setTimeout(async () => {
+          try {
+            await requestJson(`/buses/${bus._id}/location`, {
+              method: 'POST',
+              token: session.token,
+              body: { lat: 0, lng: 0 }
+            });
+            console.log(`Location deleted for bus ${bus.busNumber} after 1 hour`);
+          } catch (error) {
+            console.error('Failed to delete location:', error);
+          }
+        }, 60 * 60 * 1000); // 1 hour in milliseconds
+      }
+
+      Alert.alert('Location assigned', `Current location assigned to ${buses.length} bus(es). Location will be automatically deleted after 1 hour.`);
+      refreshBuses();
+    } catch (error) {
+      Alert.alert('Assignment failed', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
-      <AppHeader session={session} onLogout={onLogout} />
+      <AppHeader 
+        session={session} 
+        onLogout={onLogout} 
+        menuActions={[
+          { label: '*Assign current loc', onPress: assignCurrentLocationToBus }
+        ]}
+      />
       <Card>
         <SectionTitle title="Assigned buses" description="Buses assigned to you. Update stop locations or verify tickets." />
         {verificationFlash ? (
@@ -4050,7 +4563,9 @@ function ConductorDashboard({ session, onLogout }) {
                 const fromStop = data?.booking?.startStop || 'N/A';
                 const toStop = data?.booking?.endStop || 'N/A';
                 const paidStatus = data?.booking?.paidStatus==false?"Not paid":"Paid";
-                showVerificationFeedback('Ticket verified', `Ticket verified successfully\nUser Name: ${passengerName}\nFrom: ${fromStop}\nTo: ${toStop}\nPaid Status: ${paidStatus}`);
+                const createdAt = booking?.createdAt || 'N/A';
+                const ticketID = booking?._id || 'N/A';
+                showVerificationFeedback('Ticket verified', `Ticket verified successfully\nTicket ID: ${ticketID}\nFrom: ${fromStop}\nTo: ${toStop}\nFare: ₹20.0\nPaid Status: ${paidStatus}\nTimestamp: ${createdAt}`);
               } catch (error) {
                 if (String(error.message || '').toLowerCase().includes('already verified')) {
                   showVerificationFeedback('Ticket already verified', error.message);
@@ -5916,5 +6431,187 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  liveMapPreview: {
+    height: 250,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#E2E8F0',
+    position: 'relative',
+  },
+  liveMapPreviewWebView: {
+    flex: 1,
+  },
+  liveMapPreviewFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#E2E8F0',
+  },
+  liveMapPreviewTitle: {
+    fontSize: 16,
+    color: '#64748B',
+    marginBottom: 8,
+  },
+  liveMapPreviewSubtitle: {
+    fontSize: 12,
+    color: '#94A3B8',
+  },
+  liveMapPreviewHint: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    backgroundColor: 'rgba(15, 23, 42, 0.78)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  liveMapPreviewHintText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  liveMapModalScreen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  liveMapModalHeader: {
+    paddingTop: 52,
+    paddingBottom: 12,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    zIndex: 20,
+  },
+  liveMapBackButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  liveMapBackButtonText: {
+    fontSize: 24,
+    color: '#0F172A',
+    fontWeight: '500',
+  },
+  liveMapModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  liveMapHeaderSpacer: {
+    width: 40,
+  },
+  liveMapStage: {
+    flex: 1,
+    position: 'relative',
+    backgroundColor: '#E2E8F0',
+  },
+  liveMapWebView: {
+    flex: 1,
+  },
+  liveMapCircleOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  liveMapCircle: {
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.55)',
+    backgroundColor: 'rgba(226, 232, 240, 0.28)',
+  },
+  liveMapCenterPinOuter: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#64748B',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  liveMapCenterPinInner: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FFFFFF',
+  },
+  liveMapLocateButton: {
+    position: 'absolute',
+    right: 16,
+    bottom: 120,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 4,
+  },
+  liveMapLocateButtonText: {
+    fontSize: 24,
+    color: '#0F172A',
+    lineHeight: 28,
+  },
+  liveMapNearbyPanel: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    zIndex: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  liveMapNearbyTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 8,
+  },
+  liveMapNearbyEmpty: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+  },
+  liveMapNearbyList: {
+    gap: 8,
+    paddingRight: 8,
+  },
+  liveMapNearbyChip: {
+    backgroundColor: '#1565C0',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  liveMapNearbyChipPressed: {
+    opacity: 0.85,
+  },
+  liveMapNearbyChipText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });
