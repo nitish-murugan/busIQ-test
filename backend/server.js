@@ -1605,6 +1605,92 @@ app.post('/api/bookings/sync-offline', authRequired, async (req, res) => {
   }
 });
 
+// Analytics endpoints
+app.get('/api/analytics/conductor', authRequired, async (req, res) => {
+  try {
+    if (req.auth.role !== 'conductor') {
+      return res.status(403).json({ message: 'Conductor access required' });
+    }
+
+    // Get today's date in IST
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000; // IST is UTC+5:30
+    const istNow = new Date(now.getTime() + istOffset);
+    const todayStart = new Date(istNow);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(istNow);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    // Convert back to UTC for MongoDB query
+    const utcStart = new Date(todayStart.getTime() - istOffset);
+    const utcEnd = new Date(todayEnd.getTime() - istOffset);
+
+    // Get buses assigned to this conductor
+    const assignedBuses = await Bus.find({ conductor: req.auth.id });
+    const busIds = assignedBuses.map(b => b._id);
+
+    // Count today's verified tickets for these buses
+    const todayBookings = await Booking.find({
+      bus: { $in: busIds },
+      status: 'verified',
+      verifiedAt: { $gte: utcStart, $lte: utcEnd }
+    }).populate('bus');
+
+    const ticketCount = todayBookings.length;
+    const revenue = ticketCount * 20; // Assuming ₹20 per ticket
+    const todayTrips = assignedBuses.length; // Number of buses assigned = trips
+
+    return res.json({
+      todayTrips,
+      ticketCount,
+      revenue
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.get('/api/analytics/bus/:busId', authRequired, adminOnly, async (req, res) => {
+  try {
+    const bus = await Bus.findById(req.params.busId);
+    if (!bus) {
+      return res.status(404).json({ message: 'Bus not found' });
+    }
+
+    // Get today's date in IST
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000; // IST is UTC+5:30
+    const istNow = new Date(now.getTime() + istOffset);
+    const todayStart = new Date(istNow);
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(istNow);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    // Convert back to UTC for MongoDB query
+    const utcStart = new Date(todayStart.getTime() - istOffset);
+    const utcEnd = new Date(todayEnd.getTime() - istOffset);
+
+    // Count today's verified tickets for this bus
+    const todayBookings = await Booking.find({
+      bus: req.params.busId,
+      status: 'verified',
+      verifiedAt: { $gte: utcStart, $lte: utcEnd }
+    });
+
+    const ticketCount = todayBookings.length;
+    const revenue = ticketCount * 20; // Assuming ₹20 per ticket
+    const todayTrips = 1; // Each bus is considered 1 trip per day
+
+    return res.json({
+      todayTrips,
+      ticketCount,
+      revenue
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`Bus booking API running on port ${port}`);
 });
