@@ -131,6 +131,26 @@ async function clearExpiredConductorAssignments() {
   );
 }
 
+async function clearExpiredBusLocations() {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+  const result = await Bus.updateMany(
+    {
+      'currentLocation.updatedAt': { $lt: oneHourAgo },
+      'currentLocation.lat': { $ne: 0 },
+      'currentLocation.lng': { $ne: 0 },
+    },
+    {
+      $set: {
+        'currentLocation.lat': 0,
+        'currentLocation.lng': 0,
+      }
+    }
+  );
+  if (result.modifiedCount > 0) {
+    console.log(`Cleared location for ${result.modifiedCount} bus(es) after 1 hour`);
+  }
+}
+
 async function findBusAssignedToConductor(conductorId, excludeBusId = null) {
   const filter = { conductor: conductorId };
 
@@ -1693,4 +1713,13 @@ app.get('/api/analytics/bus/:busId', authRequired, adminOnly, async (req, res) =
 
 app.listen(port, '0.0.0.0', () => {
   console.log(`Bus booking API running on port ${port}`);
+
+  // Run location cleanup every minute
+  setInterval(async () => {
+    try {
+      await clearExpiredBusLocations();
+    } catch (error) {
+      console.error('Error clearing expired bus locations:', error);
+    }
+  }, 60 * 1000); // Run every minute
 });
