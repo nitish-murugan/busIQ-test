@@ -1625,6 +1625,28 @@ app.post('/api/bookings/sync-offline', authRequired, async (req, res) => {
   }
 });
 
+const TICKET_FARE = 20;
+
+function getIstUtcRangeForDate(dateStr) {
+  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const base = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00`);
+  const istNow = new Date(base.getTime() + istOffset);
+  const dayStart = new Date(istNow);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(istNow);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  return {
+    utcStart: new Date(dayStart.getTime() - istOffset),
+    utcEnd: new Date(dayEnd.getTime() - istOffset),
+  };
+}
+
 // Analytics endpoints
 app.get('/api/analytics/conductor', authRequired, async (req, res) => {
   try {
@@ -1657,13 +1679,64 @@ app.get('/api/analytics/conductor', authRequired, async (req, res) => {
     }).populate('bus');
 
     const ticketCount = todayBookings.length;
-    const revenue = ticketCount * 20; // Assuming ₹20 per ticket
+    const revenue = ticketCount * TICKET_FARE;
     const todayTrips = assignedBuses.length; // Number of buses assigned = trips
 
     return res.json({
       todayTrips,
       ticketCount,
       revenue
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+app.get('/api/analytics/conductor/report', authRequired, async (req, res) => {
+  try {
+    if (req.auth.role !== 'conductor') {
+      return res.status(403).json({ message: 'Conductor access required' });
+    }
+
+    const { date, busId } = req.query || {};
+    if (!date || !busId) {
+      return res.status(400).json({ message: 'Date and busId are required' });
+    }
+
+    const range = getIstUtcRangeForDate(date);
+    if (!range) {
+      return res.status(400).json({ message: 'Date must be in YYYY-MM-DD format' });
+    }
+
+    const bus = await Bus.findById(busId);
+    if (!bus) {
+      return res.status(404).json({ message: 'Bus not found' });
+    }
+
+    if (String(bus.conductor) !== String(req.auth.id)) {
+      return res.status(403).json({ message: 'You can only view reports for your assigned buses' });
+    }
+
+    const bookings = await Booking.find({
+      bus: busId,
+      status: 'verified',
+      verifiedAt: { $gte: range.utcStart, $lte: range.utcEnd },
+    })
+      .populate('user', 'name email')
+      .sort({ verifiedAt: 1 });
+
+    return res.json({
+      date,
+      busId,
+      busNumber: bus.busNumber,
+      reports: bookings.map((booking) => ({
+        ticketId: booking._id.toString(),
+        passengerName: booking.user?.name || 'Passenger',
+        startStop: booking.startStop,
+        endStop: booking.endStop,
+        fare: TICKET_FARE,
+        time: booking.verifiedAt,
+      })),
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
@@ -1698,7 +1771,7 @@ app.get('/api/analytics/bus/:busId', authRequired, adminOnly, async (req, res) =
     });
 
     const ticketCount = todayBookings.length;
-    const revenue = ticketCount * 20; // Assuming ₹20 per ticket
+    const revenue = ticketCount * TICKET_FARE;
     const todayTrips = 1; // Each bus is considered 1 trip per day
 
     return res.json({

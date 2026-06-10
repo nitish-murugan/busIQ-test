@@ -6,25 +6,26 @@
     "start": "expo start",
     "backend": "node backend/server.js",
     "tracker": "./data/myenv/bin/python data/app.py",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^1.23.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "8.6.0",
-    "expo": "~55.0.24",
-    "expo-camera": "~55.0.18",
+    "expo": "~55.0.26",
+    "expo-camera": "~55.0.19",
     "expo-constants": "~55.0.16",
     "expo-location": "^55.1.10",
     "expo-status-bar": "~55.0.6",
+    "expo-system-ui": "~55.0.18",
     "expo-updates": "~55.0.24",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-native": "0.83.6",
     "react-native-qrcode-svg": "^6.3.17",
     "react-native-web": "^0.21.0",
-    "react-native-webview": "13.16.1"
+    "react-native-webview": "13.16.0"
   },
   "private": true
 }

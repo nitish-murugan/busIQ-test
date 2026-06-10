@@ -6,6 +6,11 @@ import Constants from 'expo-constants';
 import SvgQRCode from 'react-native-qrcode-svg';
 import * as Location from 'expo-location';
 import { WebView } from 'react-native-webview';
+import DateTimePicker from '@react-native-community/datetimepicker';
+
+//npx expo prebuild
+//cd android
+//./gradlew assembleDebug
 
 // npx eas-cli@latest build -p android --profile preview
 
@@ -145,6 +150,20 @@ function formatDateTime(dateValue) {
   const date = new Date(dateValue);
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
 }
+
+function formatDateOnly(dateValue) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+const TICKET_FARE = 20;
 
 function parseQrData(rawValue) {
   if (typeof rawValue !== 'string') {
@@ -815,7 +834,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null }) {
+function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null, walletBalance = null, onWalletPress = null }) {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -926,17 +945,27 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null 
           {session ? (
             <>
               {(session.user.role === 'user') ? (
-                <Pressable style={styles.ghostIcon} onPress={() => setScannerOpen(true)}>
-                  <Image source={require('./assets/qr-code-scan.png')} style={styles.ghostIconImage} />
-                </Pressable>
-              ) : (session.user.role === 'conductor') ? 
-              (
-                <Pressable style={styles.ghostIcon} onPress={() => setScannerOpen(true)}>
-                  <Image source={require('./assets/qr-code-scan.png')} style={styles.ghostIconImage} />
-                </Pressable>
-              ) 
-              : null}
-              
+                <>
+                  {walletBalance !== null && onWalletPress ? (
+                    <Pressable style={styles.walletGhostIcon} onPress={onWalletPress}>
+                      <View style={styles.walletIconContainer}>
+                        <Text style={styles.walletIconText}>₹</Text>
+                        <Text style={styles.walletBalanceText}>{walletBalance}</Text>
+                      </View>
+                    </Pressable>
+                  ) : null}
+                  <Pressable style={styles.ghostIcon} onPress={() => setScannerOpen(true)}>
+                    <Image source={require('./assets/qr-code-scan.png')} style={styles.ghostIconImage} />
+                  </Pressable>
+                </>
+              ) : (session.user.role === 'conductor') ?
+                (
+                  <Pressable style={styles.ghostIcon} onPress={() => setScannerOpen(true)}>
+                    <Image source={require('./assets/qr-code-scan.png')} style={styles.ghostIconImage} />
+                  </Pressable>
+                )
+                : null}
+
             </>
           ) : null}
         </View>
@@ -1070,9 +1099,10 @@ function DotLoading() {
   );
 }
 
-function PrimaryButton({ label, onPress, loading = false, style }) {
+function PrimaryButton({ label, onPress, loading = false, disabled = false, style }) {
+  const isDisabled = loading || disabled;
   return (
-    <Pressable onPress={onPress} disabled={loading} style={({ pressed }) => [styles.primaryButton, loading && styles.primaryButtonDisabled, style, pressed && !loading && styles.primaryButtonPressed]}>
+    <Pressable onPress={onPress} disabled={isDisabled} style={({ pressed }) => [styles.primaryButton, isDisabled && styles.primaryButtonDisabled, style, pressed && !isDisabled && styles.primaryButtonPressed]}>
       {loading ? <DotLoading /> : <Text style={styles.primaryButtonText}>{label}</Text>}
     </Pressable>
   );
@@ -1870,15 +1900,15 @@ function AuthScreen({ onAuthed }) {
                 <PillButton label="Login" active={mode === 'login'} onPress={() => setMode('login')} />
                 <PillButton label="Register" active={mode === 'register'} onPress={() => setMode('register')} />
               </View>
-            <Text style={styles.authHeading}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</Text>
-            <Text style={styles.authText}>Use the same app for users and admins. Register once, then sign in with your role.</Text>
-            {mode === 'register' ? (
-              <Field label="Full name" value={form.name} onChangeText={(name) => setForm((current) => ({ ...current, name }))} placeholder="John Carter" />
-            ) : null}
-            <Field label="Email" value={form.email} onChangeText={(email) => setForm((current) => ({ ...current, email }))} placeholder="you@company.com" keyboardType="email-address" />
-            <Field label="Password" value={form.password} onChangeText={(password) => setForm((current) => ({ ...current, password }))} placeholder="••••••••" secureTextEntry />
-            <PrimaryButton label={mode === 'login' ? 'Login' : 'Register'} onPress={submit} loading={loading} />
-          </Card>
+              <Text style={styles.authHeading}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</Text>
+              <Text style={styles.authText}>Use the same app for users and admins. Register once, then sign in with your role.</Text>
+              {mode === 'register' ? (
+                <Field label="Full name" value={form.name} onChangeText={(name) => setForm((current) => ({ ...current, name }))} placeholder="John Carter" />
+              ) : null}
+              <Field label="Email" value={form.email} onChangeText={(email) => setForm((current) => ({ ...current, email }))} placeholder="you@company.com" keyboardType="email-address" />
+              <Field label="Password" value={form.password} onChangeText={(password) => setForm((current) => ({ ...current, password }))} placeholder="••••••••" secureTextEntry />
+              <PrimaryButton label={mode === 'login' ? 'Login' : 'Register'} onPress={submit} loading={loading} />
+            </Card>
           </Animated.View>
 
         </View>
@@ -1925,6 +1955,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
   const [showOnlyCurrentBooked, setShowOnlyCurrentBooked] = useState(false);
   const [qrZoomOpen, setQrZoomOpen] = useState(false);
   const [zoomedQrData, setZoomedQrData] = useState(null);
+  const [walletOpen, setWalletOpen] = useState(false);
+  const [walletBalance, setWalletBalance] = useState(200);
 
   const displayedTickets = useMemo(() => {
     if (showOnlyCurrentBooked && selectedTicketId) {
@@ -2602,20 +2634,12 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
       return;
     }
 
-    const initialFrom = String(fromSelection || routeStops[0] || '').trim();
-    let initialTo = String(toSelection || routeStops[routeStops.length - 1] || '').trim();
-    const fromIdx = routeStopIndex(routeStops, initialFrom);
-    const toIdx = routeStopIndex(routeStops, initialTo);
-    if (fromIdx >= 0 && (toIdx < 0 || toIdx <= fromIdx)) {
-      initialTo = String(routeStops[Math.min(routeStops.length - 1, fromIdx + 1)] || routeStops[routeStops.length - 1] || '').trim();
-    }
-
     setPreviewBus(bus);
     setSelectedBus(null);
     setBookingMode(false);
     setShowPaymentOptions(false);
     setScanBookingBusId(bus._id || bus.id || null);
-    setScannedStopSelection({ from: initialFrom, to: initialTo });
+    setScannedStopSelection({ from: '', to: '' });
     setScannedStopPickerOpen(true);
     setScannerOpen(false);
   };
@@ -2627,7 +2651,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
     setScannedStopPickerOpen(false);
     setScannedStopSelection({ from: '', to: '' });
     setPreviewBus(null);
-    setActiveTab('search'); 
+    setActiveTab('search');
     setShowOnlyCurrentBooked(false);
     setShowPaymentOptions(false);
     // Keep search results and from/to selections to go back to search results page
@@ -2998,6 +3022,8 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
         session={session}
         onLogout={onLogout}
         onBusQrScanned={handleBusScan}
+        walletBalance={walletBalance}
+        onWalletPress={() => setWalletOpen(true)}
         menuActions={[
           { label: 'Search bus', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('search'); setBookingMode(false); } },
           { label: 'Ticket', onPress: () => { setShowOnlyCurrentBooked(false); setActiveTab('ticket'); setSelectedBus(null); } },
@@ -3065,6 +3091,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
                   <PrimaryButton
                     label="Continue to seat booking"
                     onPress={() => openBusBookingWithStops(previewBus, scannedStopSelection.from, scannedStopSelection.to)}
+                    disabled={!canContinueScannedBooking}
                     style={styles.flexButton}
                   />
                 </View>
@@ -3180,7 +3207,7 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
 
                 <View style={[styles.rowButtons, { marginTop: 12 }]}>
                   <PrimaryButton label="Search bus" onPress={() => fetchBus(searchValue)} loading={loading} style={styles.flexButton} />
-                  
+
                 </View>
               </View>
               {searchResults.length ? (
@@ -3380,10 +3407,10 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
               <PrimaryButton label="Pay Rs.40 now" onPress={() => setShowPaymentOptions(true)} />
             ) : (
               <View style={styles.paymentButtonsVertical}>
-                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("upi")}}>
+                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => { pressedPayButton("upi") }}>
                   <Text style={styles.paymentButtonText}>Pay using UPI</Text>
                 </Pressable>
-                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => {pressedPayButton("wallet")}}>
+                <Pressable style={({ pressed }) => [styles.paymentButton, pressed && styles.paymentButtonPressed]} onPress={() => { pressedPayButton("wallet") }}>
                   <Text style={styles.paymentButtonText}>Pay using wallet</Text>
                 </Pressable>
                 <PrimaryButton label="Pay offline" onPress={() => pressedPayButton("offline")} loading={loading} />
@@ -3518,6 +3545,31 @@ function UserDashboard({ session, onLogout, refreshSignal, trackingUrl, scannedB
           </Pressable>
         </Modal>
       ) : null}
+
+      {walletOpen ? (
+        <Modal visible animationType="slide" onRequestClose={() => setWalletOpen(false)}>
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            <Card>
+              <View style={styles.scannedStopsHeaderRow}>
+                <Pressable onPress={() => setWalletOpen(false)} style={styles.secondaryAction}>
+                  <Text style={styles.secondaryActionText}>Back</Text>
+                </Pressable>
+                <View style={{ flex: 1, marginHorizontal: 12 }}>
+                  <Text style={styles.scannedStopsBusTitle}>Wallet</Text>
+                  <Text style={styles.scannedStopsBusSubtitle}>Your Balance</Text>
+                </View>
+              </View>
+
+              <View style={{ marginTop: 32, alignItems: 'center' }}>
+                <View style={styles.walletBalanceCard}>
+                  <Text style={styles.walletBalanceLabel}>Balance</Text>
+                  <Text style={styles.walletBalanceAmount}>₹ {walletBalance}</Text>
+                </View>
+              </View>
+            </Card>
+          </ScrollView>
+        </Modal>
+      ) : null}
     </ScrollView>
   );
 }
@@ -3640,6 +3692,11 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [refreshing, setRefreshing] = useState(false);
   const scrollViewRef = useRef(null);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [selectedBusForAnalytics, setSelectedBusForAnalytics] = useState(null);
+  const [busAnalyticsSearch, setBusAnalyticsSearch] = useState('');
+  const [analytics, setAnalytics] = useState({ todayTrips: 0, ticketCount: 0, revenue: 0 });
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
   const showVerificationFeedback = (title, message) => {
     setVerificationFlash({ title, message });
@@ -3698,6 +3755,24 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       setBusList(data.buses || []);
     } catch (error) {
       Alert.alert('Could not load buses', error.message);
+    }
+  };
+
+  const fetchBusAnalytics = async (busId) => {
+    if (!busId) return;
+    try {
+      setAnalyticsLoading(true);
+      const data = await requestJson(`/analytics/bus/${busId}`, { token: session.token });
+      setAnalytics({
+        todayTrips: data.todayTrips || 0,
+        ticketCount: data.ticketCount || 0,
+        revenue: data.revenue || 0,
+      });
+    } catch (error) {
+      console.error('Failed to fetch bus analytics:', error);
+      setAnalytics({ todayTrips: 0, ticketCount: 0, revenue: 0 });
+    } finally {
+      setAnalyticsLoading(false);
     }
   };
 
@@ -3968,31 +4043,35 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
         session={session}
         onLogout={onLogout}
         menuActions={[
-          { label: 'Add bus', onPress: () => {
-            setForm({
-              busNumber: '',
-              seats: '40',
-              startTime: '08:00',
-              endTime: '12:00',
-              startPeriod: 'AM',
-              endPeriod: 'PM',
-              daily: true,
-              busType: 'Local',
-              from: '',
-              to: '',
-              stops: [
-                { name: '', lat: 0, lng: 0 },
-                { name: '', lat: 0, lng: 0 },
-              ],
-              conductorId: '',
-            });
-            setSavedBus(null);
-            setActiveTab('add');
-            scrollViewRef.current?.scrollTo({ y: 0, animated: true });
-          } },
+          {
+            label: 'Add bus', onPress: () => {
+              setForm({
+                busNumber: '',
+                seats: '40',
+                startTime: '08:00',
+                endTime: '12:00',
+                startPeriod: 'AM',
+                endPeriod: 'PM',
+                daily: true,
+                busType: 'Local',
+                from: '',
+                to: '',
+                stops: [
+                  { name: '', lat: 0, lng: 0 },
+                  { name: '', lat: 0, lng: 0 },
+                ],
+                conductorId: '',
+              });
+              setSavedBus(null);
+              setActiveTab('add');
+              scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+            }
+          },
+          { label: 'View bus', onPress: () => setActiveTab('view') },
           { label: 'Verify ticket', onPress: () => setActiveTab('verify') },
           { label: 'Scan bus', onPress: () => { setScannerPurpose('bus'); setScannerOpen(true); } },
           { label: 'Set live tracking', onPress: () => setTrackingModalOpen(true) },
+          { label: 'Analytics', onPress: () => { setAnalyticsOpen(true); setSelectedBusForAnalytics(null); setAnalytics({ todayTrips: 0, ticketCount: 0, revenue: 0 }); setBusAnalyticsSearch(''); } },
         ]}
       />
 
@@ -4085,6 +4164,85 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
         </Card>
       ) : null}
 
+      {activeTab === 'view' ? (
+        <Card>
+          <SectionTitle title="Bus list" description="Search and manage buses stored in the local MongoDB collection." />
+          <Field label="Search buses" value={busSearch} onChangeText={setBusSearch} placeholder="Search by bus number, from, or to" />
+          <View style={{ marginTop: 8 }}>
+            {filteredBuses.length ? (
+              filteredBuses.map((bus) => {
+                const routeStops = getBusRouteStops(bus);
+                return (
+                  <Card key={bus._id} style={{ marginBottom: 8 }}>
+                    <View style={styles.busTopRow}>
+                      <View style={{ flex: 1, paddingRight: 12 }}>
+                        <Text style={styles.cardTitle}>Bus {bus.busNumber}</Text>
+                        <Text style={styles.cardSubtitle}>{bus.from} → {bus.to}</Text>
+                        <Text style={styles.helperText}>Conductor: {bus.conductor ? bus.conductor.name : 'Unassigned'}</Text>
+                        <Text style={styles.adminBusRouteText}>{routeStops.join(' → ')}</Text>
+                      </View>
+                      <View style={styles.adminBusQrWrap}>
+                        <View style={styles.localQrWrap}>
+                          <SvgQRCode value={buildBusQrValue(bus)} size={80} />
+                        </View>
+                      </View>
+                    </View>
+                    <View style={styles.adminBusCardFooter}>
+                      {
+                        bus.conductor ? (null) : (
+                          <Pressable style={styles.secondaryAction} onPress={() => openAssignModal(bus)}>
+                            <Text style={styles.secondaryActionText}>Assign conductor</Text>
+                          </Pressable>
+                        )
+                      }
+
+                      <View style={{ flex: 1 }} />
+
+                      <View style={{ position: 'relative' }}>
+                        <Pressable
+                          style={styles.kebabButton}
+                          onPress={(e) => {
+                            const { pageX, pageY } = e.nativeEvent;
+                            setMenuPosition({ x: pageX, y: pageY });
+                            setMenuOpenBusId(bus._id);
+                          }}
+                        >
+                          <Text style={styles.kebabText}>⋮</Text>
+                        </Pressable>
+                        {menuOpenBusId === bus._id && (
+                          <View style={[styles.kebabMenu, { top: menuPosition.y + 10, left: menuPosition.x - 100 }]}>
+                            <Pressable
+                              style={styles.kebabMenuItem}
+                              onPress={() => {
+                                setMenuOpenBusId(null);
+                                editBus(bus);
+                              }}
+                            >
+                              <Text style={styles.kebabMenuItemText}>Edit</Text>
+                            </Pressable>
+                            <Pressable
+                              style={styles.kebabMenuItem}
+                              onPress={() => {
+                                setMenuOpenBusId(null);
+                                deleteBus(bus._id);
+                              }}
+                            >
+                              <Text style={[styles.kebabMenuItemText, styles.kebabMenuItemTextDanger]}>Delete</Text>
+                            </Pressable>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </Card>
+                );
+              })
+            ) : (
+              <Text style={styles.helperText}>No buses found.</Text>
+            )}
+          </View>
+        </Card>
+      ) : null}
+
       {activeTab === 'verify' ? (
         <Card>
           <SectionTitle title="Verify ticket" description="Scan a passenger QR and confirm that the booking is still within the selected route window." />
@@ -4140,61 +4298,6 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
         />
       ) : null}
 
-      <Card>
-        <SectionTitle title="Bus list" description="Search and manage buses stored in the local MongoDB collection." />
-        <Field label="Search buses" value={busSearch} onChangeText={setBusSearch} placeholder="Search by bus number, from, or to" />
-        <View style={{ marginTop: 8 }}>
-          {filteredBuses.length ? (
-            filteredBuses.map((bus) => {
-              const routeStops = getBusRouteStops(bus);
-              return (
-                <Card key={bus._id} style={{ marginBottom: 8 }}>
-                  <View style={styles.busTopRow}>
-                    <View style={{ flex: 1, paddingRight: 12 }}>
-                      <Text style={styles.cardTitle}>Bus {bus.busNumber}</Text>
-                      <Text style={styles.cardSubtitle}>{bus.from} → {bus.to}</Text>
-                      <Text style={styles.helperText}>Conductor: {bus.conductor ? bus.conductor.name : 'Unassigned'}</Text>
-                      <Text style={styles.adminBusRouteText}>{routeStops.join(' → ')}</Text>
-                    </View>
-                    <View style={styles.adminBusQrWrap}>
-                      <View style={styles.localQrWrap}>
-                        <SvgQRCode value={buildBusQrValue(bus)} size={80} />
-                      </View>
-                    </View>
-                  </View>
-                  <View style={styles.adminBusCardFooter}>
-                    {
-                    bus.conductor ? (null) : (
-                      <Pressable style={styles.secondaryAction} onPress={() => openAssignModal(bus)}>
-                        <Text style={styles.secondaryActionText}>Assign conductor</Text>
-                      </Pressable>
-                    )
-                    }
-                    
-                    <View style={{ flex: 1 }} />
-                    
-                    <View style={{ position: 'relative' }}>
-                      <Pressable
-                        style={styles.kebabButton}
-                        onPress={(e) => {
-                          const { pageX, pageY } = e.nativeEvent;
-                          setMenuPosition({ x: pageX, y: pageY });
-                          setMenuOpenBusId(menuOpenBusId === bus._id ? null : bus._id);
-                        }}
-                      >
-                        <View style={styles.kebabDot} />
-                        <View style={styles.kebabDot} />
-                        <View style={styles.kebabDot} />
-                      </Pressable>
-                    </View>
-                  </View>
-                </Card>
-              );
-            })
-          ) : <Text style={styles.helperText}>No buses saved yet.</Text>}
-        </View>
-      </Card>
-
       <Modal visible={menuOpenBusId !== null} transparent animationType="fade" onRequestClose={() => setMenuOpenBusId(null)}>
         <Pressable style={styles.kebabMenuBackdrop} onPress={() => setMenuOpenBusId(null)} />
         {menuOpenBusId && (() => {
@@ -4205,7 +4308,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           const left = Math.max(8, Math.min(menuPosition.x - menuWidth / 2, windowSize.width - menuWidth - 8));
           const top = Math.max(8, menuPosition.y);
           return (
-            <View style={[styles.kebabMenuModal, { position: 'absolute', left, top, width: menuWidth }] }>
+            <View style={[styles.kebabMenuModal, { position: 'absolute', left, top, width: menuWidth }]}>
               <Pressable style={styles.kebabMenuItem} onPress={() => { editBus(bus); setMenuOpenBusId(null); }}>
                 <Text style={styles.kebabMenuItemText}>Edit</Text>
               </Pressable>
@@ -4273,6 +4376,75 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           </View>
         </View>
       </Modal>
+
+      {analyticsOpen ? (
+        <Modal visible animationType="slide" onRequestClose={() => setAnalyticsOpen(false)}>
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            <Card>
+              <View style={styles.scannedStopsHeaderRow}>
+                <Pressable onPress={() => setAnalyticsOpen(false)} style={styles.secondaryAction}>
+                  <Text style={styles.secondaryActionText}>Back</Text>
+                </Pressable>
+                <View style={{ flex: 1, marginHorizontal: 12 }}>
+                  <Text style={styles.scannedStopsBusTitle}>Bus Analytics</Text>
+                  <Text style={styles.scannedStopsBusSubtitle}>Admin Dashboard</Text>
+                </View>
+              </View>
+
+              <View style={{ marginTop: 16 }}>
+                <Field
+                  label="Select bus"
+                  value={busAnalyticsSearch}
+                  onChangeText={setBusAnalyticsSearch}
+                  placeholder="Search buses by number or route"
+                />
+                <View style={styles.assignListBox}>
+                  <ScrollView style={{ maxHeight: 200 }}>
+                    {busList.filter((b) => (`${b.busNumber} ${b.from} ${b.to}`).toLowerCase().includes((busAnalyticsSearch || '').toLowerCase())).map((bus) => (
+                      <Pressable
+                        key={bus._id}
+                        style={[styles.assignListItem, selectedBusForAnalytics?._id === bus._id && styles.assignListItemSelected]}
+                        onPress={() => {
+                          setSelectedBusForAnalytics(bus);
+                          fetchBusAnalytics(bus._id);
+                        }}
+                      >
+                        <Text style={styles.cardTitle1}>Bus {bus.busNumber}</Text>
+                        <Text style={styles.helperText}>{bus.from} → {bus.to}</Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                </View>
+              </View>
+
+              {selectedBusForAnalytics ? (
+                <View style={{ marginTop: 16 }}>
+                  {analyticsLoading ? (
+                    <ActivityIndicator size="large" color="#0EA5E9" style={{ marginVertical: 20 }} />
+                  ) : (
+                    <View>
+                      <View style={styles.analyticsCard}>
+                        <Text style={styles.analyticsLabel}>Today's trip</Text>
+                        <Text style={styles.analyticsValue}>{analytics.todayTrips}</Text>
+                      </View>
+                      <View style={styles.analyticsCard}>
+                        <Text style={styles.analyticsLabel}>Ticket</Text>
+                        <Text style={styles.analyticsValue}>{analytics.ticketCount}</Text>
+                      </View>
+                      <View style={styles.analyticsCard}>
+                        <Text style={styles.analyticsLabel}>Revenue</Text>
+                        <Text style={styles.analyticsValue}>₹{analytics.revenue.toLocaleString('en-IN')}</Text>
+                      </View>
+                    </View>
+                  )}
+                </View>
+              ) : (
+                <Text style={[styles.helperText, { textAlign: 'center', marginTop: 16 }]}>Select a bus to view analytics</Text>
+              )}
+            </Card>
+          </ScrollView>
+        </Modal>
+      ) : null}
     </ScrollView>
   );
 }
@@ -4288,6 +4460,15 @@ function ConductorDashboard({ session, onLogout }) {
   const [zoomedQrData, setZoomedQrData] = useState(null);
   const [verifiedTicket, setVerifiedTicket] = useState(null);
   const [otpVerify, setOtpVerify] = useState('');
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [analytics, setAnalytics] = useState({ todayTrips: 3, ticketCount: 0, revenue: 0 });
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [reportDate, setReportDate] = useState(() => new Date());
+  const [showReportDatePicker, setShowReportDatePicker] = useState(false);
+  const [selectedReportBus, setSelectedReportBus] = useState(null);
+  const [reportEntries, setReportEntries] = useState([]);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportSearched, setReportSearched] = useState(false);
   const locationDeleteTimers = useRef({});
 
   const showVerificationFeedback = (title, message) => {
@@ -4307,7 +4488,69 @@ function ConductorDashboard({ session, onLogout }) {
     }
   };
 
+  const fetchAnalytics = async () => {
+    try {
+      setAnalyticsLoading(true);
+      const data = await requestJson('/analytics/conductor', { token: session.token });
+      setAnalytics({
+        todayTrips: data.todayTrips || 3,
+        ticketCount: data.ticketCount || 0,
+        revenue: data.revenue || 0,
+      });
+    } catch (error) {
+      console.error('Failed to fetch analytics:', error);
+      // Keep default values on error
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
   useEffect(() => { refreshBuses(); }, []);
+  useEffect(() => { fetchAnalytics(); }, []);
+
+  useEffect(() => {
+    if (!selectedReportBus && buses.length) {
+      setSelectedReportBus(buses[0]);
+    }
+  }, [buses, selectedReportBus]);
+
+  const fetchDailyReport = async () => {
+    if (!selectedReportBus?._id) {
+      Alert.alert('Select bus', 'Choose a bus before searching the daily report.');
+      return;
+    }
+
+    try {
+      setReportLoading(true);
+      setReportSearched(true);
+      const date = formatDateOnly(reportDate);
+      const data = await requestJson(
+        `/analytics/conductor/report?date=${encodeURIComponent(date)}&busId=${encodeURIComponent(selectedReportBus._id)}`,
+        { token: session.token }
+      );
+      setReportEntries(data.reports || []);
+    } catch (error) {
+      Alert.alert('Report failed', error.message);
+      setReportEntries([]);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const handleReportDateChange = (event, selectedDate) => {
+    if (Platform.OS === 'android') {
+      setShowReportDatePicker(false);
+    }
+
+    if (event?.type === 'dismissed') {
+      setShowReportDatePicker(false);
+      return;
+    }
+
+    if (selectedDate) {
+      setReportDate(selectedDate);
+    }
+  };
 
   useEffect(() => {
     if (!verificationFlash) {
@@ -4385,7 +4628,7 @@ function ConductorDashboard({ session, onLogout }) {
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
-      const paidStatus = booking?.paidStatus==false?"Not paid":"{Paid}";
+      const paidStatus = booking?.paidStatus == false ? "Not paid" : "{Paid}";
       const createdAt = booking?.createdAt || 'N/A';
       const ticketID = booking?._id || 'N/A';
 
@@ -4457,10 +4700,11 @@ function ConductorDashboard({ session, onLogout }) {
 
   return (
     <ScrollView contentContainerStyle={styles.scrollContent}>
-      <AppHeader 
-        session={session} 
-        onLogout={onLogout} 
+      <AppHeader
+        session={session}
+        onLogout={onLogout}
         menuActions={[
+          { label: 'Analytics', onPress: () => setAnalyticsOpen(true) },
           { label: '*Assign current loc', onPress: assignCurrentLocationToBus }
         ]}
       />
@@ -4545,50 +4789,50 @@ function ConductorDashboard({ session, onLogout }) {
         )) : <Text style={styles.helperText}>No buses assigned to you.</Text>}
         <View style={{ marginTop: 12, alignItems: 'center' }}>
           <PrimaryButton label="Open ticket scanner" onPress={() => { setScannerOpen(true); }} style={styles.centerScannerButton} />
-          <View style={{ width: '100%', marginTop: 12  }}>
+          <View style={{ width: '100%', marginTop: 12 }}>
             <Field label="Verify using OTP" value={otpVerify} onChangeText={(v) => setOtpVerify(v)} placeholder="Enter 6-digit OTP" keyboardType="number-pad" />
             <View style={{ marginTop: 8 }}>
               <PrimaryButton label="Verify by OTP" onPress={async () => {
-              try {
-                setLoading(true);
-                const data = await requestJson('/bookings/verify', {
-                  method: 'POST',
-                  token: session.token,
-                  body: { otp: otpVerify, clientTime: new Date().toISOString() },
-                });
+                try {
+                  setLoading(true);
+                  const data = await requestJson('/bookings/verify', {
+                    method: 'POST',
+                    token: session.token,
+                    body: { otp: otpVerify, clientTime: new Date().toISOString() },
+                  });
 
-                setVerifiedTicket(data.booking);
-                setScannerOpen(false);
-                const passengerName = data?.booking?.user?.name || data?.booking?.offlinePayload?.userName || 'N/A';
-                const fromStop = data?.booking?.startStop || 'N/A';
-                const toStop = data?.booking?.endStop || 'N/A';
-                const paidStatus = data?.booking?.paidStatus==false?"Not paid":"Paid";
-                const createdAt = booking?.createdAt || 'N/A';
-                const ticketID = booking?._id || 'N/A';
-                showVerificationFeedback('Ticket verified', `Ticket verified successfully\nTicket ID: ${ticketID}\nFrom: ${fromStop}\nTo: ${toStop}\nFare: ₹20.0\nPaid Status: ${paidStatus}\nTimestamp: ${createdAt}`);
-              } catch (error) {
-                if (String(error.message || '').toLowerCase().includes('already verified')) {
-                  showVerificationFeedback('Ticket already verified', error.message);
-                } else {
-                  Alert.alert('Verification failed', error.message);
+                  setVerifiedTicket(data.booking);
+                  setScannerOpen(false);
+                  const passengerName = data?.booking?.user?.name || data?.booking?.offlinePayload?.userName || 'N/A';
+                  const fromStop = data?.booking?.startStop || 'N/A';
+                  const toStop = data?.booking?.endStop || 'N/A';
+                  const paidStatus = data?.booking?.paidStatus == false ? "Not paid" : "Paid";
+                  const createdAt = booking?.createdAt || 'N/A';
+                  const ticketID = booking?._id || 'N/A';
+                  showVerificationFeedback('Ticket verified', `Ticket verified successfully\nTicket ID: ${ticketID}\nFrom: ${fromStop}\nTo: ${toStop}\nFare: ₹20.0\nPaid Status: ${paidStatus}\nTimestamp: ${createdAt}`);
+                } catch (error) {
+                  if (String(error.message || '').toLowerCase().includes('already verified')) {
+                    showVerificationFeedback('Ticket already verified', error.message);
+                  } else {
+                    Alert.alert('Verification failed', error.message);
+                  }
+                } finally {
+                  setLoading(false);
                 }
-              } finally {
-                setLoading(false);
-              }
-            }} loading={loading} />
+              }} loading={loading} />
             </View>
           </View>
 
-            {verifiedTicket ? (
-              <View style={styles.ticketMetaGrid}>
-                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Ticket</Text><Text style={styles.ticketMetaValue}>#{verifiedTicket._id.slice(-8)}</Text></View>
-                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.status}</Text></View>
-                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.otp}</Text></View>
-                <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Route</Text><Text style={styles.ticketMetaValueSmall}>{verifiedTicket.startStop} → {verifiedTicket.endStop}</Text></View>
-              </View>
-            ) : (
-              <Text style={styles.helperText}>Use the scanner to verify an active ticket.</Text>
-            )}
+          {verifiedTicket ? (
+            <View style={styles.ticketMetaGrid}>
+              <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Ticket</Text><Text style={styles.ticketMetaValue}>#{verifiedTicket._id.slice(-8)}</Text></View>
+              <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Status</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.status}</Text></View>
+              <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>OTP</Text><Text style={styles.ticketMetaValue}>{verifiedTicket.otp}</Text></View>
+              <View style={styles.ticketMetaBox}><Text style={styles.infoLabel}>Route</Text><Text style={styles.ticketMetaValueSmall}>{verifiedTicket.startStop} → {verifiedTicket.endStop}</Text></View>
+            </View>
+          ) : (
+            <Text style={styles.helperText}>Use the scanner to verify an active ticket.</Text>
+          )}
         </View>
       </Card>
 
@@ -4613,6 +4857,143 @@ function ConductorDashboard({ session, onLogout }) {
           onClose={() => setScannerOpen(false)}
           onMatch={handleTicketScan}
         />
+      ) : null}
+
+      {analyticsOpen ? (
+        <Modal visible animationType="slide" onRequestClose={() => setAnalyticsOpen(false)}>
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            <Card>
+              <View style={styles.scannedStopsHeaderRow}>
+                <Pressable onPress={() => setAnalyticsOpen(false)} style={styles.secondaryAction}>
+                  <Text style={styles.secondaryActionText}>Back</Text>
+                </Pressable>
+                <View style={{ flex: 1, marginHorizontal: 12 }}>
+                  <Text style={styles.scannedStopsBusTitle}>Today's Analytics</Text>
+                  <Text style={styles.scannedStopsBusSubtitle}>Conductor Dashboard</Text>
+                </View>
+              </View>
+
+              {analyticsLoading ? (
+                <ActivityIndicator size="large" color="#0EA5E9" style={{ marginVertical: 20 }} />
+              ) : (
+                <View style={{ marginTop: 16 }}>
+                  <View style={styles.analyticsCard}>
+                    <Text style={styles.analyticsLabel}>Today's trip</Text>
+                    <Text style={styles.analyticsValue}>{analytics.todayTrips}</Text>
+                  </View>
+                  <View style={styles.analyticsCard}>
+                    <Text style={styles.analyticsLabel}>Ticket</Text>
+                    <Text style={styles.analyticsValue}>{analytics.ticketCount}</Text>
+                  </View>
+                  <View style={styles.analyticsCard}>
+                    <Text style={styles.analyticsLabel}>Revenue</Text>
+                    <Text style={styles.analyticsValue}>₹{analytics.revenue.toLocaleString('en-IN')}</Text>
+                  </View>
+                </View>
+              )}
+
+              <View style={styles.analyticsReportSection}>
+                <SectionTitle title="Daily report" description="Select a bus and date to view verified passenger tickets." />
+
+                {buses.length ? (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.reportBusChipRow}>
+                    {buses.map((bus) => (
+                      <Pressable
+                        key={bus._id}
+                        onPress={() => {
+                          setSelectedReportBus(bus);
+                          setReportEntries([]);
+                          setReportSearched(false);
+                        }}
+                        style={[
+                          styles.reportBusChip,
+                          selectedReportBus?._id === bus._id && styles.reportBusChipActive,
+                        ]}
+                      >
+                        <Text style={[
+                          styles.reportBusChipText,
+                          selectedReportBus?._id === bus._id && styles.reportBusChipTextActive,
+                        ]}>
+                          Bus {bus.busNumber}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
+                ) : (
+                  <Text style={styles.helperText}>No assigned buses available for reporting.</Text>
+                )}
+
+                <View style={styles.reportSearchRow}>
+                  <Pressable
+                    onPress={() => setShowReportDatePicker(true)}
+                    style={styles.reportDateButton}
+                  >
+                    <Text style={styles.reportDateButtonLabel}>Date</Text>
+                    <Text style={styles.reportDateButtonValue}>{formatDateOnly(reportDate)}</Text>
+                  </Pressable>
+                  <PrimaryButton
+                    label="Search"
+                    onPress={fetchDailyReport}
+                    loading={reportLoading}
+                    style={styles.reportSearchButton}
+                  />
+                </View>
+
+                {showReportDatePicker ? (
+                  <DateTimePicker
+                    value={reportDate}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    onChange={handleReportDateChange}
+                    maximumDate={new Date()}
+                  />
+                ) : null}
+
+                {Platform.OS === 'ios' && showReportDatePicker ? (
+                  <Pressable onPress={() => setShowReportDatePicker(false)} style={styles.reportDateDoneButton}>
+                    <Text style={styles.reportDateDoneButtonText}>Done</Text>
+                  </Pressable>
+                ) : null}
+
+                {reportSearched ? (
+                  <View style={styles.reportResultsWrap}>
+                    <Text style={styles.reportResultsTitle}>
+                      {reportEntries.length} passenger{reportEntries.length === 1 ? '' : 's'} on {formatDateOnly(reportDate)}
+                      {selectedReportBus?.busNumber ? ` · Bus ${selectedReportBus.busNumber}` : ''}
+                    </Text>
+
+                    {reportEntries.length ? (
+                      <View style={styles.reportTable}>
+                        <View style={styles.reportTableHeader}>
+                          <Text style={[styles.reportTableHeaderCell, styles.reportCellTicket]}>Ticket ID</Text>
+                          <Text style={[styles.reportTableHeaderCell, styles.reportCellStops]}>From → To</Text>
+                          <Text style={[styles.reportTableHeaderCell, styles.reportCellFare]}>Fare</Text>
+                          <Text style={[styles.reportTableHeaderCell, styles.reportCellTime]}>Time</Text>
+                        </View>
+                        {reportEntries.map((entry) => (
+                          <View key={entry.ticketId} style={styles.reportTableRow}>
+                            <Text style={[styles.reportTableCell, styles.reportCellTicket]} numberOfLines={1}>
+                              #{String(entry.ticketId || '').slice(-8)}
+                            </Text>
+                            <Text style={[styles.reportTableCell, styles.reportCellStops]} numberOfLines={2}>
+                              {entry.startStop} → {entry.endStop}
+                            </Text>
+                            <Text style={[styles.reportTableCell, styles.reportCellFare]}>₹{entry.fare}</Text>
+                            <Text style={[styles.reportTableCell, styles.reportCellTime]} numberOfLines={2}>
+                              {formatDateTime(entry.time)}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={styles.helperText}>No verified passengers found for this bus on the selected date.</Text>
+                    )}
+                  </View>
+                ) : null}
+              </View>
+            </Card>
+          </ScrollView>
+        </Modal>
       ) : null}
     </ScrollView>
   );
@@ -4831,7 +5212,9 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   headerRight: {
+    flexDirection: 'row',
     alignItems: 'flex-end',
+    justifyContent: 'flex-end',
     gap: 8,
   },
   headerMeta: {
@@ -4870,6 +5253,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  walletGhostIcon: {
+    borderWidth: 1,
+    borderColor: 'rgba(125, 211, 252, 0.35)',
+    paddingHorizontal: 16,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   ghostIconImage: {
     width: 24,
     height: 24,
@@ -4880,6 +5272,42 @@ const styles = StyleSheet.create({
   ghostIconText: {
     color: '#BAE6FD',
     fontSize: 18,
+  },
+  walletIconContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  walletIconText: {
+    color: '#BAE6FD',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  walletBalanceText: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 4,
+  },
+  walletBalanceCard: {
+    backgroundColor: '#081427',
+    borderRadius: 20,
+    padding: 32,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.12)',
+    width: '100%',
+  },
+  walletBalanceLabel: {
+    color: '#94A3B8',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  walletBalanceAmount: {
+    color: '#0EA5E9',
+    fontSize: 48,
+    fontWeight: '800',
   },
   drawerBackdrop: {
     flex: 1,
@@ -6209,6 +6637,161 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.06)'
+  },
+  assignListItemSelected: {
+    backgroundColor: 'rgba(14, 165, 233, 0.15)',
+    borderBottomColor: 'rgba(14, 165, 233, 0.3)'
+  },
+  analyticsCard: {
+    backgroundColor: '#081427',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.12)',
+    alignItems: 'center',
+  },
+  analyticsLabel: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  analyticsValue: {
+    color: '#0EA5E9',
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  analyticsReportSection: {
+    marginTop: 24,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(148, 163, 184, 0.12)',
+  },
+  reportBusChipRow: {
+    gap: 8,
+    paddingVertical: 4,
+    marginBottom: 12,
+  },
+  reportBusChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+    backgroundColor: '#041021',
+  },
+  reportBusChipActive: {
+    borderColor: '#0EA5E9',
+    backgroundColor: 'rgba(14, 165, 233, 0.15)',
+  },
+  reportBusChipText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  reportBusChipTextActive: {
+    color: '#0EA5E9',
+  },
+  reportSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 12,
+    marginTop: 4,
+  },
+  reportDateButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: '#041021',
+    justifyContent: 'center',
+  },
+  reportDateButtonLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  reportDateButtonValue: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  reportSearchButton: {
+    minWidth: 110,
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+  },
+  reportDateDoneButton: {
+    alignSelf: 'flex-end',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  reportDateDoneButtonText: {
+    color: '#0EA5E9',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  reportResultsWrap: {
+    marginTop: 16,
+  },
+  reportResultsTitle: {
+    color: '#CBD5E1',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  reportTable: {
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.12)',
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: '#041021',
+  },
+  reportTableHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#081427',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(148, 163, 184, 0.12)',
+  },
+  reportTableHeaderCell: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  reportTableRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(148, 163, 184, 0.08)',
+  },
+  reportTableCell: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  reportCellTicket: {
+    width: '22%',
+    paddingRight: 6,
+  },
+  reportCellStops: {
+    width: '38%',
+    paddingRight: 6,
+  },
+  reportCellFare: {
+    width: '14%',
+    paddingRight: 6,
+  },
+  reportCellTime: {
+    width: '26%',
   },
   assignListBox: {
     borderWidth: 1,

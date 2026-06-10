@@ -43,3 +43,5 @@ yarn-error.*
 
 /data/myenv
 __pycache__
+
+android
