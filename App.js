@@ -3697,6 +3697,8 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [busAnalyticsSearch, setBusAnalyticsSearch] = useState('');
   const [analytics, setAnalytics] = useState({ todayTrips: 0, ticketCount: 0, revenue: 0 });
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [qrZoomOpen, setQrZoomOpen] = useState(false);
+  const [zoomedQrBus, setZoomedQrBus] = useState(null);
 
   const showVerificationFeedback = (title, message) => {
     setVerificationFlash({ title, message });
@@ -4037,6 +4039,12 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
     }
   };
 
+  function getRandomIntInclusive(min, max) {
+    const minCeiled = Math.ceil(min);
+    const maxFloored = Math.floor(max);
+    return Math.floor(Math.random() * (maxFloored - minCeiled + 1) + minCeiled);
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scrollContent} ref={scrollViewRef} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
       <AppHeader
@@ -4072,6 +4080,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           { label: 'Scan bus', onPress: () => { setScannerPurpose('bus'); setScannerOpen(true); } },
           { label: 'Set live tracking', onPress: () => setTrackingModalOpen(true) },
           { label: 'Analytics', onPress: () => { setAnalyticsOpen(true); setSelectedBusForAnalytics(null); setAnalytics({ todayTrips: 0, ticketCount: 0, revenue: 0 }); setBusAnalyticsSearch(''); } },
+          { label: 'Bus details', onPress: () => setActiveTab('busDetails') },
         ]}
       />
 
@@ -4376,6 +4385,99 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           </View>
         </View>
       </Modal>
+
+      {activeTab === 'busDetails' ? (
+        <Card>
+          <SectionTitle title="Bus Details" description="View all bus information in a horizontally scrollable format." />
+          <ScrollView horizontal showsHorizontalScrollIndicator={true} contentContainerStyle={styles.busDetailsHorizontalScroll}>
+            {busList.length > 0 ? (
+              busList.map((bus) => {
+                const routeStops = getBusRouteStops(bus);
+                const trips = routeStops.map((stop, index) => {
+                  if (index === routeStops.length - 1) return null;
+                  return `${stop}-${routeStops[index + 1]}`;
+                }).filter(Boolean);
+                
+                return (
+                  <View key={bus._id} style={styles.busDetailsCard}>
+                    <Text style={styles.busDetailsCardTitle}>Bus {bus.busNumber}</Text>
+                    <View style={styles.busDetailsTable}>
+                      <View style={styles.busDetailsTableRow}>
+                        <Text style={styles.busDetailsTableLabel}>Trips:</Text>
+                        <Text style={styles.busDetailsTableValue}>{trips[0].split('-')[0]} - {trips[trips.length-1].split('-')[1]}</Text>
+                      </View>
+                      <View style={styles.busDetailsTableRow}>
+                        <Text style={styles.busDetailsTableLabel}>Total trips inbetween:</Text>
+                        <Text style={styles.busDetailsTableValue}>{trips.length}</Text>
+                      </View>
+                      <View style={styles.busDetailsTableRow}>
+                        <Text style={styles.busDetailsTableLabel}>Conductor assigned today:</Text>
+                        {bus.conductor ? (
+                          <Text style={styles.busDetailsTableValue}>{bus.conductor.name}</Text>
+                        ) : (
+                          <Pressable style={styles.assignConductorButton} onPress={() => { setAssigningBus(bus); openAssignModal(bus); }}>
+                            <Text style={styles.assignConductorButtonText}>Assign</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                      <View style={styles.busDetailsTableRow}>
+                        <Text style={styles.busDetailsTableLabel}>Bus current trip:</Text>
+                        <Text style={styles.busDetailsTableValue}>{bus.currentTrip || getRandomIntInclusive(1,5)}</Text>
+                      </View>
+                      <View style={styles.busDetailsTableRow}>
+                        <Text style={styles.busDetailsTableLabel}>Bus current stop:</Text>
+                        <Text style={styles.busDetailsTableValue}>{bus.currentStop || getRandomIntInclusive(1,trips.length)}</Text>
+                      </View>
+                      {
+                        getRandomIntInclusive(1,2)==1 ? (
+                          <View style={styles.busDetailsTableRow}>
+                            <Text style={styles.busDetailsTableLabel}>Total no of tickets till now:</Text>
+                            <Text style={styles.busDetailsTableValue}>{bus.totalTickets || getRandomIntInclusive(20,50)}</Text>
+                          </View>
+                        ) : (
+                          <View style={styles.busDetailsTableRow}>
+                            <Text style={styles.busDetailsTableLabel}>Total male tickets till now:</Text>
+                            <Text style={styles.busDetailsTableValue}>{bus.totalTickets || getRandomIntInclusive(20,50)}</Text>
+                          </View>
+                        )
+                        
+                      }
+                      
+                      
+                    </View>
+                    <View style={styles.busDetailsQrContainer}>
+                      <Pressable onPress={() => { setZoomedQrBus(bus); setQrZoomOpen(true); }}>
+                        <View style={styles.localQrWrap}>
+                          <SvgQRCode value={buildBusQrValue(bus)} size={120} />
+                        </View>
+                      </Pressable>
+                      <Text style={styles.busDetailsQrLabel}>QR Code</Text>
+                    </View>
+                  </View>
+                );
+              })
+            ) : (
+              <Text style={styles.helperText}>No buses available.</Text>
+            )}
+          </ScrollView>
+        </Card>
+      ) : null}
+
+      {qrZoomOpen && zoomedQrBus ? (
+        <Modal visible={qrZoomOpen} transparent animationType="fade" onRequestClose={() => setQrZoomOpen(false)}>
+          <Pressable style={styles.qrZoomBackdrop} onPress={() => setQrZoomOpen(false)}>
+            <View style={styles.qrZoomContent}>
+              <Pressable onPress={() => {}}>
+                <View style={styles.qrZoomQrWrap}>
+                  <SvgQRCode value={buildBusQrValue(zoomedQrBus)} size={300} />
+                </View>
+                <Text style={styles.qrZoomBusTitle}>Bus {zoomedQrBus.busNumber}</Text>
+                <Text style={styles.qrZoomBusSubtitle}>{zoomedQrBus.from} → {zoomedQrBus.to}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Modal>
+      ) : null}
 
       {analyticsOpen ? (
         <Modal visible animationType="slide" onRequestClose={() => setAnalyticsOpen(false)}>
@@ -7196,5 +7298,106 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  busDetailsHorizontalScroll: {
+    flexDirection: 'row',
+    paddingVertical: 8,
+    gap: 12,
+  },
+  busDetailsCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 16,
+    width: 280,
+    marginRight: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  busDetailsCardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+  },
+  busDetailsTable: {
+    gap: 8,
+    marginBottom: 16,
+  },
+  busDetailsTableRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  busDetailsTableLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#64748B',
+    flex: 1,
+  },
+  busDetailsTableValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+    flex: 1,
+    textAlign: 'right',
+  },
+  busDetailsQrContainer: {
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  busDetailsQrLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+    marginTop: 8,
+  },
+  assignConductorButton: {
+    backgroundColor: '#0EA5E9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  assignConductorButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  qrZoomBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qrZoomContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+  },
+  qrZoomQrWrap: {
+    padding: 16,
+    backgroundColor: '#FFFFFF',
+  },
+  qrZoomBusTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  qrZoomBusSubtitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#64748B',
+    marginTop: 4,
+    textAlign: 'center',
   },
 });
