@@ -1245,24 +1245,40 @@ function BusDetailsCard({ bus, onStartBooking, hideActions = false }) {
 
 function RouteAssistantLauncher({ session }) {
   const [open, setOpen] = useState(false);
-  const [fromCity, setFromCity] = useState('');
-  const [toCity, setToCity] = useState('');
+  const [userQuery, setUserQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [routeResult, setRouteResult] = useState(null);
   const [routeError, setRouteError] = useState('');
+  const [allBuses, setAllBuses] = useState([]);
 
   useEffect(() => {
     if (open) {
       setRouteError('');
+      loadAllBuses();
     }
   }, [open]);
 
-  const analyzeRoute = async () => {
-    const from = String(fromCity || '').trim();
-    const to = String(toCity || '').trim();
+  const loadAllBuses = async () => {
+    try {
+      const data = await requestJson('/buses', { token: session.token });
+      setAllBuses(data.buses || []);
+    } catch (error) {
+      console.error('Failed to load buses:', error);
+      setAllBuses([]);
+    }
+  };
 
-    if (!from || !to) {
-      setRouteError('Please enter both From city and To city.');
+  const analyzeRouteWithGemini = async () => {
+    const query = String(userQuery || '').trim();
+
+    if (!query) {
+      setRouteError('Please enter your travel request.');
+      setRouteResult(null);
+      return;
+    }
+
+    if (!allBuses.length) {
+      setRouteError('No buses available for analysis.');
       setRouteResult(null);
       return;
     }
@@ -1270,19 +1286,98 @@ function RouteAssistantLauncher({ session }) {
     try {
       setLoading(true);
       setRouteError('');
-      const data = await requestJson('/routes/plan', {
-        method: 'POST',
-        token: session.token,
-        body: {
-          fromCity: from,
-          toCity: to,
-        },
+
+      // Prepare bus data for Gemini
+      const busData = allBuses.map(bus => {
+        const routeStops = getBusRouteStops(bus);
+        return {
+          busNumber: bus.busNumber,
+          from: bus.from,
+          to: bus.to,
+          stops: routeStops,
+          startTime: bus.startTime,
+          endTime: bus.endTime,
+        };
       });
 
-      setRouteResult(data.route || null);
+      const systemPrompt = `You are a bus route assistant. Analyze the available buses and their stops to find the best route for the user's request.
+The user will ask in natural language like "I need to go from stop A to stop Z".
+Your task is to:
+1. Identify the start and end stops from the user's request
+2. Find direct buses if available
+3. If no direct bus, find multi-bus routes with transfer points
+4. Analyze general or current typical traffic conditions between these locations using your general knowledge (outside traffic data), and determine the best and worst routes based on traffic.
+5. Return the result in JSON format with this structure:
+{
+  "found": true/false,
+  "summary": "Brief description of the best route and why it's recommended.",
+  "traffic_analysis": {
+    "best_route_reasoning": "Why this route is best considering traffic",
+    "worst_route_reasoning": "What route to avoid due to typical traffic"
+  },
+  "transfers": number of transfers,
+  "segments": [
+    {
+      "busNumber": "BUS-101",
+      "busId": "bus_id",
+      "routeStops": ["Stop A", "Stop B", "Stop C"],
+      "fromStop": "Stop A",
+      "toStop": "Stop C"
+    }
+  ]
+}
+
+If no route is found, return:
+{
+  "found": false,
+  "message": "Reason why no route was found"
+}`;
+
+      const userPrompt = `Available buses with their stops:
+${JSON.stringify(busData, null, 2)}
+
+User request: "${query}"
+
+Find the best bus route and return the result in the specified JSON format.`;
+
+      // Call Gemini API
+      const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.EXPO_PUBLIC_GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: systemPrompt }]
+          },
+          contents: [
+            { role: 'user', parts: [{ text: userPrompt }] }
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            response_mime_type: "application/json",
+          },
+        }),
+      });
+
+      if (!geminiResponse.ok) {
+        const errorData = await geminiResponse.text();
+        throw new Error(`Gemini API error: ${errorData}`);
+      }
+
+      const geminiData = await geminiResponse.json();
+      const aiContent = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!aiContent) {
+        throw new Error('No response from Gemini');
+      }
+
+      const parsedResult = JSON.parse(aiContent);
+      setRouteResult(parsedResult);
     } catch (error) {
+      console.error('Gemini analysis error:', error);
       setRouteResult(null);
-      setRouteError(error.message);
+      setRouteError(error.message || 'Failed to analyze route with AI');
     } finally {
       setLoading(false);
     }
@@ -1306,7 +1401,7 @@ function RouteAssistantLauncher({ session }) {
             <View style={styles.aiModalCard}>
               <View style={styles.aiModalHeader}>
                 <View style={styles.aiModalHeaderText}>
-                  <Text style={styles.kicker}>Route assistant</Text>
+                  <Text style={styles.kicker}>AI Route Assistant</Text>
                   <Text style={styles.aiModalTitle}>Find the bus chain</Text>
                   <Text style={styles.aiModalSubtitle}>Enter the from and to cities. I’ll search the stored buses and transfer stops.</Text>
                 </View>
@@ -1316,14 +1411,9 @@ function RouteAssistantLauncher({ session }) {
               </View>
 
               <ScrollView contentContainerStyle={styles.aiModalContent} showsVerticalScrollIndicator={false}>
-                <View style={styles.aiBubbleAssistant}>
-                  <Text style={styles.aiBubbleText}>Tell me where you want to start and where you want to go. I will only return bus hops and transfer points.</Text>
-                </View>
+                <Field label="Where do you want to go?" value={userQuery} onChangeText={setUserQuery} placeholder="I need to go from Stop A to Stop Z" multiline numberOfLines={3} />
 
-                <Field label="From city" value={fromCity} onChangeText={setFromCity} placeholder="City A" />
-                <Field label="To city" value={toCity} onChangeText={setToCity} placeholder="City C" />
-
-                <PrimaryButton label="Analyze route" onPress={analyzeRoute} loading={loading} />
+                <PrimaryButton label="Find route with AI" onPress={analyzeRouteWithGemini} loading={loading} />
 
                 {routeError ? (
                   <View style={styles.aiBubbleUser}>
@@ -1340,6 +1430,13 @@ function RouteAssistantLauncher({ session }) {
                           : routeResult.message || 'No connected route found.'}
                       </Text>
                     </View>
+                    {routeResult.traffic_analysis ? (
+                      <View style={{ marginTop: 12, padding: 12, backgroundColor: '#f8fafc', borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                        <Text style={{ fontWeight: '600', marginBottom: 4, color: '#0f172a' }}>🚦 Traffic Analysis</Text>
+                        <Text style={{ fontSize: 13, color: '#16a34a', marginBottom: 4 }}>✓ <Text style={{ fontWeight: '600' }}>Best route:</Text> {routeResult.traffic_analysis.best_route_reasoning}</Text>
+                        <Text style={{ fontSize: 13, color: '#dc2626' }}>✗ <Text style={{ fontWeight: '600' }}>Worst route:</Text> {routeResult.traffic_analysis.worst_route_reasoning}</Text>
+                      </View>
+                    ) : null}
                     {routeResult.found ? (
                       <View style={styles.aiRouteList}>
                         <View style={styles.aiRouteHeaderBox}>
@@ -4075,12 +4172,12 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
               scrollViewRef.current?.scrollTo({ y: 0, animated: true });
             }
           },
-          { label: 'View bus', onPress: () => setActiveTab('view') },
-          { label: 'Verify ticket', onPress: () => setActiveTab('verify') },
-          { label: 'Scan bus', onPress: () => { setScannerPurpose('bus'); setScannerOpen(true); } },
+          { label: 'Bus details', onPress: () => setActiveTab('busDetails') },
+          //{ label: 'View bus', onPress: () => setActiveTab('view') },
+          //{ label: 'Verify ticket', onPress: () => setActiveTab('verify') },
+          //{ label: 'Scan bus', onPress: () => { setScannerPurpose('bus'); setScannerOpen(true); } },
           { label: 'Set live tracking', onPress: () => setTrackingModalOpen(true) },
           { label: 'Analytics', onPress: () => { setAnalyticsOpen(true); setSelectedBusForAnalytics(null); setAnalytics({ todayTrips: 0, ticketCount: 0, revenue: 0 }); setBusAnalyticsSearch(''); } },
-          { label: 'Bus details', onPress: () => setActiveTab('busDetails') },
         ]}
       />
 
@@ -4397,14 +4494,26 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                   if (index === routeStops.length - 1) return null;
                   return `${stop}-${routeStops[index + 1]}`;
                 }).filter(Boolean);
-                
+
                 return (
                   <View key={bus._id} style={styles.busDetailsCard}>
-                    <Text style={styles.busDetailsCardTitle}>Bus {bus.busNumber}</Text>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={styles.busDetailsCardTitle}>Bus {bus.busNumber}</Text>
+                      <Pressable
+                        style={styles.kebabButton}
+                        onPress={(e) => {
+                          const { pageX, pageY } = e.nativeEvent;
+                          setMenuPosition({ x: pageX, y: pageY });
+                          setMenuOpenBusId(bus._id);
+                        }}
+                      >
+                        <Text style={styles.kebabText}>⋮</Text>
+                      </Pressable>
+                    </View>
                     <View style={styles.busDetailsTable}>
                       <View style={styles.busDetailsTableRow}>
                         <Text style={styles.busDetailsTableLabel}>Trips:</Text>
-                        <Text style={styles.busDetailsTableValue}>{trips[0].split('-')[0]} - {trips[trips.length-1].split('-')[1]}</Text>
+                        <Text style={styles.busDetailsTableValue}>{trips[0].split('-')[0]} - {trips[trips.length - 1].split('-')[1]}</Text>
                       </View>
                       <View style={styles.busDetailsTableRow}>
                         <Text style={styles.busDetailsTableLabel}>Total trips inbetween:</Text>
@@ -4422,28 +4531,28 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
                       </View>
                       <View style={styles.busDetailsTableRow}>
                         <Text style={styles.busDetailsTableLabel}>Bus current trip:</Text>
-                        <Text style={styles.busDetailsTableValue}>{bus.currentTrip || getRandomIntInclusive(1,5)}</Text>
+                        <Text style={styles.busDetailsTableValue}>{bus.currentTrip || getRandomIntInclusive(1, 5)}</Text>
                       </View>
                       <View style={styles.busDetailsTableRow}>
                         <Text style={styles.busDetailsTableLabel}>Bus current stop:</Text>
-                        <Text style={styles.busDetailsTableValue}>{bus.currentStop || getRandomIntInclusive(1,trips.length)}</Text>
+                        <Text style={styles.busDetailsTableValue}>{bus.currentStop || getRandomIntInclusive(1, trips.length)}</Text>
                       </View>
                       {
-                        getRandomIntInclusive(1,2)==1 ? (
+                        getRandomIntInclusive(1, 2) == 1 ? (
                           <View style={styles.busDetailsTableRow}>
                             <Text style={styles.busDetailsTableLabel}>Total no of tickets till now:</Text>
-                            <Text style={styles.busDetailsTableValue}>{bus.totalTickets || getRandomIntInclusive(20,50)}</Text>
+                            <Text style={styles.busDetailsTableValue}>{bus.totalTickets || getRandomIntInclusive(20, 50)}</Text>
                           </View>
                         ) : (
                           <View style={styles.busDetailsTableRow}>
                             <Text style={styles.busDetailsTableLabel}>Total male tickets till now:</Text>
-                            <Text style={styles.busDetailsTableValue}>{bus.totalTickets || getRandomIntInclusive(20,50)}</Text>
+                            <Text style={styles.busDetailsTableValue}>{bus.totalTickets || getRandomIntInclusive(20, 50)}</Text>
                           </View>
                         )
-                        
+
                       }
-                      
-                      
+
+
                     </View>
                     <View style={styles.busDetailsQrContainer}>
                       <Pressable onPress={() => { setZoomedQrBus(bus); setQrZoomOpen(true); }}>
@@ -4467,7 +4576,7 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
         <Modal visible={qrZoomOpen} transparent animationType="fade" onRequestClose={() => setQrZoomOpen(false)}>
           <Pressable style={styles.qrZoomBackdrop} onPress={() => setQrZoomOpen(false)}>
             <View style={styles.qrZoomContent}>
-              <Pressable onPress={() => {}}>
+              <Pressable onPress={() => { }}>
                 <View style={styles.qrZoomQrWrap}>
                   <SvgQRCode value={buildBusQrValue(zoomedQrBus)} size={300} />
                 </View>
@@ -4730,7 +4839,7 @@ function ConductorDashboard({ session, onLogout }) {
       const passengerName = booking?.user?.name || booking?.offlinePayload?.userName || 'N/A';
       const fromStop = booking?.startStop || 'N/A';
       const toStop = booking?.endStop || 'N/A';
-      const paidStatus = booking?.paidStatus == false ? "Not paid" : "{Paid}";
+      const paidStatus = booking?.paidStatus == false ? "Not paid" : "Paid";
       const createdAt = booking?.createdAt || 'N/A';
       const ticketID = booking?._id || 'N/A';
 
