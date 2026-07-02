@@ -834,7 +834,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null, walletBalance = null, onWalletPress = null }) {
+function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null, walletBalance = null, onWalletPress = null, onNotificationsPress = null, adminUnreadNotifications = 0 }) {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -962,6 +962,13 @@ function AppHeader({ session, onLogout, menuActions = [], onBusQrScanned = null,
                 (
                   <Pressable style={styles.ghostIcon} onPress={() => setScannerOpen(true)}>
                     <Image source={require('./assets/qr-code-scan.png')} style={styles.ghostIconImage} />
+                  </Pressable>
+                ) : (session.user.role === 'admin') ? (
+                  <Pressable style={styles.ghostIcon} onPress={onNotificationsPress}>
+                    <Text style={{ fontSize: 22, textAlign: 'center', lineHeight: 32 }}>🔔</Text>
+                    {adminUnreadNotifications > 0 ? (
+                      <View style={{ position: 'absolute', top: 4, right: 6, width: 10, height: 10, borderRadius: 5, backgroundColor: '#ef4444' }} />
+                    ) : null}
                   </Pressable>
                 )
                 : null}
@@ -1255,6 +1262,10 @@ function RouteAssistantLauncher({ session }) {
     if (open) {
       setRouteError('');
       loadAllBuses();
+    } else {
+      setRouteResult(null);
+      setRouteError('');
+      setUserQuery('');
     }
   }, [open]);
 
@@ -1322,7 +1333,9 @@ Your task is to:
       "busId": "bus_id",
       "routeStops": ["Stop A", "Stop B", "Stop C"],
       "fromStop": "Stop A",
-      "toStop": "Stop C"
+      "toStop": "Stop C",
+      "waitTime": "wait 5mins",
+      "travelTime": "20mins travel"
     }
   ]
 }
@@ -1397,7 +1410,7 @@ Find the best bus route and return the result in the specified JSON format.`;
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={styles.aiModalBackdrop}>
-          <KeyboardAvoidingView style={styles.aiModalShell} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView style={styles.aiModalShell} behavior="padding">
             <View style={styles.aiModalCard}>
               <View style={styles.aiModalHeader}>
                 <View style={styles.aiModalHeaderText}>
@@ -1448,8 +1461,8 @@ Find the best bus route and return the result in the specified JSON format.`;
                         <Text style={styles.aiRouteMeta}>{routeResult.transfers ? `${routeResult.transfers} transfer${routeResult.transfers === 1 ? '' : 's'}` : 'Direct route'}</Text>
                         {routeResult.segments.map((segment, index) => (
                           <View key={`${segment.busId}-${index}`} style={styles.aiRouteSegment}>
+                            <Text style={styles.aiRouteSegmentText}>({segment.waitTime || 'wait 5mins'}) {segment.routeStops.join(' → ')} ({segment.travelTime || '20mins travel'})</Text>
                             <Text style={styles.aiRouteSegmentTitle}>Bus {segment.busNumber}</Text>
-                            <Text style={styles.aiRouteSegmentText}>{segment.routeStops.join(' → ')}</Text>
                           </View>
                         ))}
                       </View>
@@ -3796,6 +3809,9 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [qrZoomOpen, setQrZoomOpen] = useState(false);
   const [zoomedQrBus, setZoomedQrBus] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [notificationsModalOpen, setNotificationsModalOpen] = useState(false);
+  const adminUnreadNotifications = notifications.filter(n => !n.read).length;
 
   const showVerificationFeedback = (title, message) => {
     setVerificationFlash({ title, message });
@@ -4147,6 +4163,8 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
       <AppHeader
         session={session}
         onLogout={onLogout}
+        onNotificationsPress={() => setNotificationsModalOpen(true)}
+        adminUnreadNotifications={adminUnreadNotifications}
         menuActions={[
           {
             label: 'Add bus', onPress: () => {
@@ -4587,6 +4605,32 @@ function AdminDashboard({ session, onLogout, trackingUrl, onTrackingUrlChange })
           </Pressable>
         </Modal>
       ) : null}
+
+      <Modal visible={notificationsModalOpen} animationType="slide" onRequestClose={() => setNotificationsModalOpen(false)}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <Card>
+            <View style={styles.scannedStopsHeaderRow}>
+              <Pressable onPress={() => setNotificationsModalOpen(false)} style={styles.secondaryAction}>
+                <Text style={styles.secondaryActionText}>Close</Text>
+              </Pressable>
+              <Text style={styles.cardTitle}>Notifications</Text>
+              <View style={{ width: 60 }} />
+            </View>
+            <View style={{ marginTop: 16 }}>
+              {notifications.length > 0 ? (
+                notifications.map((n, i) => (
+                  <View key={n.id || i} style={{ padding: 12, marginBottom: 8, backgroundColor: n.read ? '#f8fafc' : '#eff6ff', borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0' }}>
+                    <Text style={{ fontWeight: '600', color: '#0f172a' }}>{n.title}</Text>
+                    <Text style={{ color: '#475569', marginTop: 4 }}>{n.message}</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.helperText}>No new notifications.</Text>
+              )}
+            </View>
+          </Card>
+        </ScrollView>
+      </Modal>
 
       {analyticsOpen ? (
         <Modal visible animationType="slide" onRequestClose={() => setAnalyticsOpen(false)}>
